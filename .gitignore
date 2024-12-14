@@ -1,0 +1,32 @@
+# Ignore all image files
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.svg
+*.webp
+*.tiff
+*.ico
+
+wandb/
+**/__pycache__/
+# Ignore zip, rar, and compressed files
+*.zip
+*.rar
+*.gz
+*.tar
+*.7z
+*.bz2
+*.xz
+*.lz4
+*.zst
+*.lzma
+*.z
+*.tgz
+
+# Ignore .pth files
+*.pth
+
+# Ignore .txt files
+*.txt
