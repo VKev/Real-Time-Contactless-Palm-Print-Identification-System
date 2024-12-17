@@ -9,19 +9,19 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
-from model import MyModel
-from util import TripletDataset, triplet_collate_fn
+from models import MyModel
+from util import TripletDataset, CombinedDataset, triplet_collate_fn
 from util import BatchAllTripletLoss
-from util import transform
+from util import transform, augmentation
 from util import load_images
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
     parser.add_argument('--checkpoint_path', type=str, default="", help='Path to checkpoint file for continuing training')
-    parser.add_argument('--train_path', type=str, default=r"raw/test-train", help='Path to the training images folder')
-    parser.add_argument('--test_path', type=str, default=r"raw/test-test", help='Path to the testing images folder')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training and testing')
-    parser.add_argument('--learning_rate', type=float, default=0.0005, help='Learning rate for the optimizer')
+    parser.add_argument('--train_path', type=str, default=r"raw/train", help='Path to the training images folder')
+    parser.add_argument('--test_path', type=str, default=r"raw/test", help='Path to the testing images folder')
+    parser.add_argument('--batch_size', type=int, default=24, help='Batch size for training and testing')
+    parser.add_argument('--learning_rate', type=float, default=0.00005, help='Learning rate for the optimizer')
     parser.add_argument('--weight_decay', type=float, default=2e-5, help='Weight decay for optimization')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train the model')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
@@ -50,7 +50,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
             eps=1e-8,
         )
         for param_group in optimizer.param_groups:
-            param_group['initial_lr'] = args.learning_rate
+            param_group['initial_lr'] = 1
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=learning_rate, last_epoch=start_epoch)
 
     else:
@@ -96,6 +96,12 @@ def setup_dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader,
         image_paths, labels, transform=transform,
         n_negatives=args.train_negatives, num_classes_for_negative=args.train_negatives_class
     )
+    augmentation_set = TripletDataset(
+        image_paths, labels, transform=transform, augmentation=augmentation,
+        n_negatives=args.train_negatives, num_classes_for_negative=args.train_negatives_class
+    )
+
+    train_set = CombinedDataset(train_set,augmentation_set)
 
     print("Train samples: ", int(0.9 * len(train_set)))
     print("Validate samples: ", len(train_set) - int(0.9 * len(train_set)))
@@ -170,6 +176,12 @@ def train_epoch(model: torch.nn.Module, train_loader: DataLoader, optimizer: opt
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+
+            gradient_histograms = {
+            f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())
+            for name, param in model.named_parameters() if param.grad is not None
+            }
+            wandb.log(gradient_histograms)
             
         total_batches += 1
         epoch_iterator.set_postfix(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
@@ -228,6 +240,9 @@ if __name__ == "__main__":
     model, optimizer, scheduler, start_epoch = initialize_model(args)
     train_loader, val_loader, test_loader = setup_dataloaders(args)
 
+    print("========Model========")
+    print(model)
+
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params}")
     total_params = sum(p.numel() for p in model.parameters())
@@ -236,7 +251,6 @@ if __name__ == "__main__":
     triplet_loss = BatchAllTripletLoss(margin=0.75)
 
     torch.cuda.empty_cache()
-
     try:
         with open("checkpoints/loss.txt", "a") as f:
             f.write(f"\n")

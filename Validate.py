@@ -1,17 +1,17 @@
 import torch
 import os
 import argparse
-from model import MyModel
+from models import MyModel
 from torch.utils.data import DataLoader
 from util import ImageDataset
 from util import transform
 from util import get_image_paths
 from tqdm import tqdm
 from sklearn.metrics.pairwise import euclidean_distances
-
+import numpy as np
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
-    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/checkpoint_epoch_27.pth", help='Path to checkpoint file for continuing training')
+    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/test2.pth", help='Path to checkpoint file for continuing training')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         choices=['cpu', 'cuda'], help='Device to use for training (cpu or cuda)')
     return parser.parse_args()
@@ -49,20 +49,23 @@ if __name__ == "__main__":
     model = MyModel().to(args.device)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    train_images_path = get_image_paths(r"raw/test-train")
+    train_images_path = get_image_paths(r"raw/test")
     image_classes = [extract_class(p) for p in train_images_path]
 
-    vectors = run_inference(train_images_path, batch_size=16 , device=args.device)
+    vectors = run_inference(train_images_path, batch_size=32 , device=args.device)
     
 
 
     vectors_np = vectors.cpu().numpy()
     distances = euclidean_distances(vectors_np)
     closest_indices = distances.argsort(axis=1)[:, 1]
-    score = 0
-    for i in range(len(image_classes)):
-        if image_classes[i] == image_classes[closest_indices[i]]:
-            score += 1
+    image_classes = np.array(image_classes)  # Ensure it's a NumPy array
+
+    # Calculate matches using vectorized comparison
+    matches = image_classes == image_classes[closest_indices]
+    
+    # Sum up the matches directly
+    score = np.sum(matches)
 
     accuracy = score / len(image_classes)
 
