@@ -30,21 +30,6 @@ class PatchEmbed(nn.Module):
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias)
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
-        self.initialize_weights()
-
-    def initialize_weights(self):
-        if isinstance(self.proj, nn.Conv2d):
-            init.kaiming_normal_(self.proj.weight, nonlinearity='relu')
-            if self.proj.bias is not None:
-                init.constant_(self.proj.bias, 0)
-
-        if isinstance(self.norm, nn.LayerNorm):
-            init.constant_(self.norm.weight, 1)
-            init.constant_(self.norm.bias, 0)
-        elif isinstance(self.norm, nn.BatchNorm2d):
-            init.constant_(self.norm.weight, 1)
-            init.constant_(self.norm.bias, 0)
-
     def forward(self, x):
         B, C, H, W = x.shape
         assert H == self.img_size[0] and W == self.img_size[1], \

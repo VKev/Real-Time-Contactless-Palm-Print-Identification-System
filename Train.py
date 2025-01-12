@@ -18,9 +18,9 @@ from util import load_images
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
     parser.add_argument('--checkpoint_path', type=str, default="", help='Path to checkpoint file for continuing training')
-    parser.add_argument('--train_path', type=str, default=r"raw/train", help='Path to the training images folder')
-    parser.add_argument('--test_path', type=str, default=r"raw/test", help='Path to the testing images folder')
-    parser.add_argument('--batch_size', type=int, default=24, help='Batch size for training and testing')
+    parser.add_argument('--train_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/train", help='Path to the training images folder')
+    parser.add_argument('--test_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/test", help='Path to the testing images folder')
+    parser.add_argument('--batch_size', type=int, default=14, help='Batch size for training and testing')
     parser.add_argument('--learning_rate', type=float, default=0.00005, help='Learning rate for the optimizer')
     parser.add_argument('--weight_decay', type=float, default=2e-5, help='Weight decay for optimization')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train the model')
