@@ -1,10 +1,10 @@
 **Detail**
 
-Add filter mlp btw after concat local and global features, add layer norm and increase augmentation strength
+Change Patch embedding to overlapping and multiscale
 
 **Performance**
 
-Top 1 test accuracy: 0.8649
+Top 1 test accuracy: 0.8851
 
 Top 1 train accuracy: 0.9999
 
@@ -12,7 +12,7 @@ Top 1 train accuracy: 0.9999
 
 **Total parameters**: 
 
-4111275
+11047822
 
 ---
 
@@ -36,35 +36,38 @@ MyModel(
   )
   (localbranch): BranchCNN(
     (convblock1): Sequential(
-      (0): Conv2d(3, 49, kernel_size=(3, 3), stride=(2, 2), padding=(2, 2))
-      (1): BatchNorm2d(49, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (0): Conv2d(3, 128, kernel_size=(3, 3), stride=(2, 2), padding=(2, 2))
+      (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
       (2): ReLU(inplace=True)
     )
     (convblock2): Sequential(
-      (0): Conv2d(49, 49, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
-      (1): BatchNorm2d(49, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
-      (2): AdaptiveAvgPool2d(output_size=(16, 16))
-      (3): GELU(approximate='none')
+      (0): Conv2d(128, 205, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+      (1): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): GELU(approximate='none')
+      (3): AdaptiveAvgPool2d(output_size=(16, 16))
     )
     (convblock3): Sequential(
-      (0): Conv2d(49, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-      (1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (0): Conv2d(205, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+      (1): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
       (2): ReLU(inplace=True)
-      (3): Conv2d(64, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-      (4): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (3): Conv2d(256, 205, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+      (4): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
       (5): ReLU(inplace=True)
       (6): AdaptiveAvgPool2d(output_size=(16, 16))
     )
-    (channel_reducer): Conv1d(128, 49, kernel_size=(1,), stride=(1,))
   )
   (patchEmbed): PatchEmbed(
-    (proj): Conv2d(64, 256, kernel_size=(8, 8), stride=(8, 8))
-    (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+    (embed_layers): ModuleList(
+      (0): Sequential(
+        (0): Conv2d(64, 256, kernel_size=(16, 16), stride=(8, 8))
+      )
+      (1): Sequential(
+        (0): Conv2d(64, 256, kernel_size=(8, 8), stride=(4, 4))
+      )
+    )
+    (norm_layer): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
   )
-  (fc_0): Sequential(
-    (0): Linear(in_features=512, out_features=256, bias=True)
-    (1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
-  )
+  (fc_0): Linear(in_features=512, out_features=256, bias=True)
   (posEmbed): Summer(
     (penc): PositionalEncoding1D()
   )
@@ -75,12 +78,8 @@ MyModel(
     (fc_o): Linear(in_features=1024, out_features=256, bias=True)
     (dropout): Dropout(p=0.1, inplace=False)
   )
-  (fc_1): Sequential(
-    (0): Linear(in_features=512, out_features=256, bias=False)
-    (1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
-    (2): ReLU()
-  )
-  (fc_2): Linear(in_features=12544, out_features=128, bias=True)
+  (fc_1): Linear(in_features=512, out_features=128, bias=True)
+  (fc_2): Linear(in_features=26240, out_features=128, bias=True)
 )
 ```
 ---

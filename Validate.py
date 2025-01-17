@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_inference(image_paths, batch_size=16, device ="cuda"):
+def run_inference(image_paths, batch_size=1, device ="cuda"):
     dataset = ImageDataset(image_paths, transform)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
     all_outputs = []
@@ -44,10 +44,16 @@ def l2_normalize(embeddings):
     normalized_embeddings = embeddings / l2_norm
     return normalized_embeddings
 
+def print_shape_hook(module, input, output):
+        print(f"Shape: {output.shape}")
+
 if __name__ == "__main__":
     args = parse_args()
     checkpoint = torch.load(args.checkpoint_path)
     model = MyModel().to(args.device)
+    
+    hook_handle = model.localbranch.convblock3[3].register_forward_hook(print_shape_hook)
+    
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     print(model)
@@ -55,8 +61,6 @@ if __name__ == "__main__":
     image_classes = [extract_class(p) for p in train_images_path]
 
     vectors = run_inference(train_images_path, batch_size=32 , device=args.device)
-    
-
 
     vectors_np = vectors.cpu().numpy()
     distances = euclidean_distances(vectors_np)

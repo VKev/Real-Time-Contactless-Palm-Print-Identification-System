@@ -6,7 +6,7 @@ import math
 from einops import rearrange
 
 class LDConv(nn.Module):
-    def __init__(self, inc, outc, num_param, stride=1, bias=None):
+    def __init__(self, inc, outc, num_param, stride=1, padding = 1,bias=None):
         super(LDConv, self).__init__()
         self.num_param = num_param
         self.stride = stride
@@ -15,6 +15,9 @@ class LDConv(nn.Module):
         nn.init.constant_(self.p_conv.weight, 0)
         self.p_conv.register_full_backward_hook(self._set_lr)
         self.register_buffer("p_n", self._get_p_n(N=self.num_param))
+        
+        for submodule in self.modules():
+            submodule._is_ldconv = True
 
     @staticmethod
     def _set_lr(module, grad_input, grad_output):

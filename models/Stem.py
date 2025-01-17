@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
+from .Utils import *
 
 class StemBlock(nn.Module):
     def __init__(self):
@@ -29,3 +30,15 @@ class StemBlock(nn.Module):
         x = self.relu(x)   
         x = self.maxpool(x)
         return x
+
+
+if __name__ == "__main__":
+    stem = StemBlock()
+
+    x = torch.randn(1, 3, 224, 224)
+
+    with torch.no_grad():
+        output = stem(x)
+    print_total_params(stem)
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {output.shape}")
