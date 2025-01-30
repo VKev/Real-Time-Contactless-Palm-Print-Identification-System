@@ -27,7 +27,7 @@ class TripletDataset(Dataset):
             if label not in self.label_to_indices:
                 self.label_to_indices[label] = []
             self.label_to_indices[label].append(idx)
-
+        print(f"Number of labels: {len(self.label_to_indices)}")
         # Calculate the maximum possible different labels for negatives
         self.max_possible_neg_classes = (
             len(self.label_to_indices) - 1

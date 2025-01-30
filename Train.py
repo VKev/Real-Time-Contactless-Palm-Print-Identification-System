@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--checkpoint_path', type=str, default="", help='Path to checkpoint file for continuing training')
     parser.add_argument('--train_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/train", help='Path to the training images folder')
     parser.add_argument('--test_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/test", help='Path to the testing images folder')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training and testing')
+    parser.add_argument('--batch_size', type=int, default=10, help='Batch size for training and testing')
     parser.add_argument('--learning_rate', type=float, default=0.00005, help='Learning rate for the optimizer')
     parser.add_argument('--weight_decay', type=float, default=2e-5, help='Weight decay for optimization')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train the model')
@@ -60,6 +60,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
         model.load_state_dict(checkpoint['model_state_dict'])
         
         start_epoch = checkpoint['epoch']
+        
         for param in model.parameters():
             param.requires_grad = True
         optimizer = optim.AdamW(
@@ -69,9 +70,11 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
             betas=(0.9, 0.999),
             eps=1e-8,
         )
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=args.learning_rate, last_epoch=start_epoch)
-
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        for param_group in optimizer.param_groups:
+            if 'initial_lr' not in param_group:
+                param_group['initial_lr'] = args.learning_rate
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: args.learning_rate, last_epoch=start_epoch)
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     return model, optimizer, scheduler, start_epoch
@@ -254,6 +257,10 @@ if __name__ == "__main__":
     try:
         with open("checkpoints/loss.txt", "a") as f:
             f.write(f"\n")
+            
+        test_loss = evaluate(model, test_loader, args.device, triplet_loss)
+        torch.cuda.empty_cache()
+        print("test loss: ", test_loss)
         for epoch in range(start_epoch, args.epochs):
             # Train
             train_loss = train_epoch(

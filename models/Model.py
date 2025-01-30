@@ -2,7 +2,8 @@ from .PatchEmbedding import PatchEmbed
 from .SpatialTransformer import STN
 from .Stem import StemBlock
 from .Local import BranchCNN
-from .LinearDeformableConv import LDConv
+# from .LinearDeformableConv import LDConv
+from .ResNet import *
 from positional_encodings.torch_encodings import PositionalEncoding1D, Summer
 from fightingcv_attention.attention.SelfAttention import ScaledDotProductAttention
 import torch
@@ -16,7 +17,7 @@ class MyModel(nn.Module):
         super(MyModel, self).__init__()
         # self.stn = STN()
         self.stem = StemBlock()
-        self.localbranch = BranchCNN()
+        self.localbranch = BranchResNet()
         self.patchEmbed =  PatchEmbed(
             img_size=56,
             in_chans=64,

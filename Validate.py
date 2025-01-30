@@ -8,10 +8,11 @@ from util import transform
 from util import get_image_paths
 from tqdm import tqdm
 from sklearn.metrics.pairwise import euclidean_distances
+from models.Utils import print_total_params
 import numpy as np
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
-    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/checkpoint_epoch_30.pth", help='Path to checkpoint file for continuing training')
+    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/checkpoint_epoch_5.pth", help='Path to checkpoint file for continuing training')
     parser.add_argument('--validate_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/test", help='Path to validate folder')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         choices=['cpu', 'cuda'], help='Device to use for training (cpu or cuda)')
@@ -52,11 +53,12 @@ if __name__ == "__main__":
     checkpoint = torch.load(args.checkpoint_path)
     model = MyModel().to(args.device)
     
-    hook_handle = model.localbranch.convblock3[3].register_forward_hook(print_shape_hook)
+    # hook_handle = model.localbranch.convblock3[3].register_forward_hook(print_shape_hook)
     
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     print(model)
+    print_total_params(model)
     train_images_path = get_image_paths(args.validate_path)
     image_classes = [extract_class(p) for p in train_images_path]
 
