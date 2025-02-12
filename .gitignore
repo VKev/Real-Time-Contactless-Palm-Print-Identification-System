@@ -9,6 +9,8 @@
 *.tiff
 *.ico
 
+**/data/*
+
 wandb/
 **/__pycache__/
 # Ignore zip, rar, and compressed files
