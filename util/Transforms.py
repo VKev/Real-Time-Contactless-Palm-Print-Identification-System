@@ -41,13 +41,13 @@ def augmentation(image):
             A.MotionBlur(blur_limit=7, p=0.5),
         ], p=0.5),
         A.OneOf([
-            A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=25, p=0.5),
+            A.Affine(translate_percent=0.0625, scale=0.1, rotate=25, p=0.5),
             A.ElasticTransform(alpha=1, sigma=50, p=0.5),
-            A.RandomResizedCrop(height=224, width=224, scale=(0.9, 1.0), p=0.5),
+            A.RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0), p=0.5)
         ], p=0.7),
         A.OneOf([
-            A.RandomFog(fog_coef_lower=0.1, fog_coef_upper=0.3, p=0.5),
-            A.RandomShadow(num_shadows_lower=1, num_shadows_upper=3, p=0.5),
+            A.RandomFog(fog_coef_range=(0.1, 0.3), p=0.5),
+            A.RandomShadow(num_shadows_limit=(1,3), p=0.5),
         ], p=0.3),
 
         A.Normalize(mean=[0.5], std=[0.5]),

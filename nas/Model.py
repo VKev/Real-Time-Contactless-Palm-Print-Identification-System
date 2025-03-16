@@ -15,7 +15,7 @@ class MyModel(nn.Module):
         super(MyModel, self).__init__()
         # self.stn = STN()
         self.stem = StemBlock()
-        self.localbranch = BranchResNet()
+        self.localbranch = BranchResNet(kernel_size=[3, 5, 7])
         self.patchEmbed =  PatchEmbed(
             img_size=56,
             in_chans=64,
