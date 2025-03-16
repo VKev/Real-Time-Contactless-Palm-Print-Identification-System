@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from nas import MyModel
-# Import the discretize function you added in ResNet.py
-from nas.ResNet import discretize_branch_resnet
+# Removed the old global discretize import since we now use member functions.
+# from nas.ResNet import discretize_branch_resnet
 
 from util import TripletDataset, CombinedDataset, triplet_collate_fn
 from util import BatchAllTripletLoss
@@ -146,7 +146,8 @@ def setup_dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader,
     )
     
     return train_loader, val_loader, test_loader
-def setup_testloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader, DataLoader]:
+
+def setup_testloaders(args: argparse.Namespace) -> DataLoader:
     test_image_paths, test_labels = load_images(args.test_path)
     
     test_set = TripletDataset(
@@ -331,13 +332,16 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error saving final checkpoint: {str(e)}")
 
-        print("\n==> Discretizing the BranchResNet part of the model to pick best kernel sizes...")
-        discrete_model = discretize_branch_resnet(model).to(args.device)
-        print(discrete_model)
-        test_loader =setup_testloaders(args)
-        discrete_test_loss = evaluate(discrete_model, test_loader, args.device, triplet_loss)
+        print("\n==> Discretizing the DARTS modules in the model...")
+        # Discretize the DARTS multi-head attention and BranchResNet parts.
+        model.selfAttn.discretize()
+        model.localbranch.discretize()
+        model.to(args.device)
+        print(model)
+        test_loader = setup_testloaders(args)
+        discrete_test_loss = evaluate(model, test_loader, args.device, triplet_loss)
         print(f"Discrete model test loss: {discrete_test_loss:.6f}")
 
         discrete_model_path = os.path.join("checkpoints", "discrete_model.pth")
-        torch.save(discrete_model.state_dict(), discrete_model_path)
+        torch.save(model.state_dict(), discrete_model_path)
         print(f"Discrete model saved at {discrete_model_path}")

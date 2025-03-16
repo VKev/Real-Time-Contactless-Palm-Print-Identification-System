@@ -1,0 +1,1 @@
+aws s3 cp Dataset.zip s3://khangstoragetest/public/ --endpoint-url https://s3.ap-southeast-1.wasabisys.com --checksum-algorithm=CRC32 --profile wasabi-user
