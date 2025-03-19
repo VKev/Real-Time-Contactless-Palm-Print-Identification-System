@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 # from .PatchEmbedding import *
-from .Utils import *
+from .utils import *
 import torch.nn.init as init
 
 

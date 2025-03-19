@@ -1,7 +1,7 @@
-from .PatchEmbedding import PatchEmbed
-from .Stem import StemBlock
+from .patch_embedding import PatchEmbed
+from .stem import StemBlock
 # from .LinearDeformableConv import LDConv
-from .ResNet import *
+from .resnet import *
 from positional_encodings.torch_encodings import PositionalEncoding1D, Summer
 from fightingcv_attention.attention.SelfAttention import ScaledDotProductAttention
 import torch

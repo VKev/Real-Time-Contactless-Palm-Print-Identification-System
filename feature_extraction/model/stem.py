@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-from .Utils import *
+from .utils import *
 
 class StemBlock(nn.Module):
     def __init__(self):

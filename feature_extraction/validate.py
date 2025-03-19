@@ -1,19 +1,19 @@
 import torch
 import os
 import argparse
-from models import MyModel
+from model import MyModel
 from torch.utils.data import DataLoader
 from util import ImageDataset
 from util import transform
 from util import get_image_paths
 from tqdm import tqdm
 from sklearn.metrics.pairwise import euclidean_distances
-from models.Utils import print_total_params
+from model.utils import print_total_params
 import numpy as np
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
-    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/checkpoint_epoch_5.pth", help='Path to checkpoint file for continuing training')
-    parser.add_argument('--validate_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/test", help='Path to validate folder')
+    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/test11_more_data.pth", help='Path to checkpoint file for continuing training')
+    parser.add_argument('--validate_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test", help='Path to validate folder')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         choices=['cpu', 'cuda'], help='Device to use for training (cpu or cuda)')
     return parser.parse_args()
@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
 
 def run_inference(image_paths, batch_size=1, device ="cuda"):
     dataset = ImageDataset(image_paths, transform)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
     all_outputs = []
     progress_bar = tqdm(total=len(dataloader), desc="Processing Batches", unit="batch")
 
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     train_images_path = get_image_paths(args.validate_path)
     image_classes = [extract_class(p) for p in train_images_path]
 
-    vectors = run_inference(train_images_path, batch_size=32 , device=args.device)
+    vectors = run_inference(train_images_path, batch_size=8 , device=args.device)
 
     vectors_np = vectors.cpu().numpy()
     distances = euclidean_distances(vectors_np)

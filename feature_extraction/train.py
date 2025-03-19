@@ -9,11 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
-
-from nas import MyModel
-# Removed the old global discretize import since we now use member functions.
-# from nas.ResNet import discretize_branch_resnet
-
+from model import MyModel
 from util import TripletDataset, CombinedDataset, triplet_collate_fn
 from util import BatchAllTripletLoss
 from util import transform, augmentation
@@ -22,9 +18,9 @@ from util import load_images
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
     parser.add_argument('--checkpoint_path', type=str, default="", help='Path to checkpoint file for continuing training')
-    parser.add_argument('--train_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/train", help='Path to the training images folder')
-    parser.add_argument('--test_path', type=str, default=r"../Dataset/Palm-Print/TrainAndTest/test", help='Path to the testing images folder')
-    parser.add_argument('--batch_size', type=int, default=6, help='Batch size for training and testing')
+    parser.add_argument('--train_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/train", help='Path to the training images folder')
+    parser.add_argument('--test_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test", help='Path to the testing images folder')
+    parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training and testing')
     parser.add_argument('--learning_rate', type=float, default=0.00005, help='Learning rate for the optimizer')
     parser.add_argument('--weight_decay', type=float, default=2e-5, help='Weight decay for optimization')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train the model')
@@ -41,7 +37,6 @@ def parse_args() -> argparse.Namespace:
 def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.Optimizer, object, int]:
     def learning_rate(epoch):
         return args.learning_rate
-
     if not args.checkpoint_path:
         start_epoch = 0
         model = MyModel().to(args.device)
@@ -60,6 +55,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
 
     else:
         checkpoint = torch.load(args.checkpoint_path)
+
         model = MyModel().to(args.device)
         model.load_state_dict(checkpoint['model_state_dict'])
         
@@ -83,9 +79,12 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
 
     return model, optimizer, scheduler, start_epoch
 
+
 def setup_wandb():
     wandb.login(key="b8b74d6af92b4dea7706baeae8b86083dad5c941")
-    wandb.init(project="My-Model")
+    wandb.init(
+        project="My-Model",
+    )
 
 def setup_dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader, DataLoader]:
     image_paths, labels = load_images(args.train_path)
@@ -105,7 +104,7 @@ def setup_dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader,
         n_negatives=args.train_negatives, num_classes_for_negative=args.train_negatives_class
     )
 
-    train_set = CombinedDataset(train_set, augmentation_set)
+    train_set = CombinedDataset(train_set,augmentation_set)
 
     print("Train samples: ", int(0.9 * len(train_set)))
     print("Validate samples: ", len(train_set) - int(0.9 * len(train_set)))
@@ -121,8 +120,8 @@ def setup_dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader,
         shuffle=True,
         collate_fn=triplet_collate_fn,
         num_workers=args.num_workers,
-        persistent_workers=True,
-        pin_memory=True
+        persistent_workers=False,
+        pin_memory=False
     )
     
     val_loader = DataLoader(
@@ -131,28 +130,8 @@ def setup_dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader,
         shuffle=True,
         collate_fn=triplet_collate_fn,
         num_workers=args.num_workers,
-        persistent_workers=True,
-        pin_memory=True
-    )
-    
-    test_loader = DataLoader(
-        test_set,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=triplet_collate_fn,
-        num_workers=args.num_workers,
-        persistent_workers=True,
-        pin_memory=True
-    )
-    
-    return train_loader, val_loader, test_loader
-
-def setup_testloaders(args: argparse.Namespace) -> DataLoader:
-    test_image_paths, test_labels = load_images(args.test_path)
-    
-    test_set = TripletDataset(
-        test_image_paths, test_labels, transform=transform,
-        n_negatives=args.test_negatives, num_classes_for_negative=args.test_negatives_class
+        persistent_workers=False,
+        pin_memory=False
     )
     
     test_loader = DataLoader(
@@ -162,10 +141,10 @@ def setup_testloaders(args: argparse.Namespace) -> DataLoader:
         collate_fn=triplet_collate_fn,
         num_workers=args.num_workers,
         persistent_workers=False,
-        pin_memory=True
+        pin_memory=False
     )
     
-    return test_loader
+    return train_loader, val_loader, test_loader
 
 def train_epoch(model: torch.nn.Module, train_loader: DataLoader, optimizer: optim.Optimizer, 
                 scheduler: object, triplet_loss: object, device: torch.device, 
@@ -202,8 +181,8 @@ def train_epoch(model: torch.nn.Module, train_loader: DataLoader, optimizer: opt
             running_loss += loss.item()
 
             gradient_histograms = {
-                f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())
-                for name, param in model.named_parameters() if param.grad is not None
+            f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())
+            for name, param in model.named_parameters() if param.grad is not None
             }
             wandb.log(gradient_histograms)
             
@@ -211,12 +190,11 @@ def train_epoch(model: torch.nn.Module, train_loader: DataLoader, optimizer: opt
         epoch_iterator.set_postfix(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
         
         scheduler.step()
-        torch.cuda.empty_cache()
     
     return running_loss / total_batches if total_batches > 0 else running_loss
 
 def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.device, 
-             triplet_loss: object) -> float:
+            triplet_loss: object) -> float:
     model.eval()
     total_loss = 0.0
     total_batches = 0
@@ -244,7 +222,7 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
     return total_loss / total_batches if total_batches > 0 else total_loss
 
 def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, scheduler: object, 
-                    epoch: int, loss: float, checkpoint_dir: str = "checkpoints"):
+                   epoch: int, loss: float, checkpoint_dir: str = "checkpoints"):
     """Save model checkpoint and training state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
@@ -282,7 +260,6 @@ if __name__ == "__main__":
         test_loss = evaluate(model, test_loader, args.device, triplet_loss)
         torch.cuda.empty_cache()
         print("test loss: ", test_loss)
-
         for epoch in range(start_epoch, args.epochs):
             # Train
             train_loss = train_epoch(
@@ -316,7 +293,6 @@ if __name__ == "__main__":
                   f"Training Loss: {train_loss:.6f}, "
                   f"Validation Loss: {val_loss:.6f}, "
                   f"Test Loss: {test_loss:.6f}")
-            
             torch.cuda.empty_cache()
             
     except KeyboardInterrupt:
@@ -325,23 +301,11 @@ if __name__ == "__main__":
         print(f"\nError occurred during training: {str(e)}")
         raise
     finally:
+        # Save final checkpoint
         try:
             final_checkpoint_path = os.path.join("checkpoints", "final_model.pth")
             save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss)
             print(f"Final checkpoint saved at {final_checkpoint_path}")
         except Exception as e:
             print(f"Error saving final checkpoint: {str(e)}")
-
-        print("\n==> Discretizing the DARTS modules in the model...")
-        # Discretize the DARTS multi-head attention and BranchResNet parts.
-        model.selfAttn.discretize()
-        model.localbranch.discretize()
-        model.to(args.device)
-        print(model)
-        test_loader = setup_testloaders(args)
-        discrete_test_loss = evaluate(model, test_loader, args.device, triplet_loss)
-        print(f"Discrete model test loss: {discrete_test_loss:.6f}")
-
-        discrete_model_path = os.path.join("checkpoints", "discrete_model.pth")
-        torch.save(model.state_dict(), discrete_model_path)
-        print(f"Discrete model saved at {discrete_model_path}")
+    
