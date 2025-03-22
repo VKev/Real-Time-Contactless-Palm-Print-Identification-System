@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--checkpoint_path', type=str, default="", help='Path to checkpoint file for continuing training')
     parser.add_argument('--train_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/train", help='Path to the training images folder')
     parser.add_argument('--test_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test", help='Path to the testing images folder')
-    parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training and testing')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for training and testing')
     parser.add_argument('--learning_rate', type=float, default=0.00005, help='Learning rate for the optimizer')
     parser.add_argument('--weight_decay', type=float, default=2e-5, help='Weight decay for optimization')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train the model')
@@ -51,8 +51,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
         )
         for param_group in optimizer.param_groups:
             param_group['initial_lr'] = 1
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=learning_rate, last_epoch=start_epoch)
-
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=40, gamma=0.99)
     else:
         checkpoint = torch.load(args.checkpoint_path)
 
@@ -74,7 +73,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
         for param_group in optimizer.param_groups:
             if 'initial_lr' not in param_group:
                 param_group['initial_lr'] = args.learning_rate
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: args.learning_rate, last_epoch=start_epoch)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=40, gamma=0.99)
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     return model, optimizer, scheduler, start_epoch
