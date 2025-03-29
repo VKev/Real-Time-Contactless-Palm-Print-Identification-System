@@ -12,7 +12,7 @@ from model.utils import print_total_params
 import numpy as np
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
-    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/test11_more_data.pth", help='Path to checkpoint file for continuing training')
+    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/checkpoint_epoch_29.pth", help='Path to checkpoint file for continuing training')
     parser.add_argument('--validate_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test", help='Path to validate folder')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         choices=['cpu', 'cuda'], help='Device to use for training (cpu or cuda)')
