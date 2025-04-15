@@ -49,6 +49,7 @@ def print_shape_hook(module, input, output):
         print(f"Shape: {output.shape}")
 
 if __name__ == "__main__":
+    
     args = parse_args()
     checkpoint = torch.load(args.checkpoint_path)
     model = MyModel().to(args.device)

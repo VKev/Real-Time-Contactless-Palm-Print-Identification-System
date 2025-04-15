@@ -1,7 +1,7 @@
-FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
 
 # Install necessary dependencies
-RUN pip install --no-cache-dir tensorboardX causal-conv1d==1.4.0 mamba-ssm==2.2.2 "timm>=0.9.5,<0.10.0" einops transformers opencv-python scipy flask python-dotenv pymongo matplotlib scikit-image scikit-learn wandb elasticsearch seaborn albumentations fightingcv-attention positional-encodings[pytorch,tensorflow] pytorch_lightning mediapipe
+RUN pip install --no-cache-dir tensorboardX causal-conv1d mamba-ssm timm einops transformers opencv-python scipy flask python-dotenv pymongo matplotlib scikit-image scikit-learn wandb elasticsearch seaborn albumentations fightingcv-attention positional-encodings[pytorch,tensorflow] pytorch_lightning mediapipe datasets
 
 # Install additional dependencies
 RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 libxcb-xinerama0 qt5-qmake qtbase5-dev qtchooser qtbase5-dev-tools libx11-dev libxkbfile-dev

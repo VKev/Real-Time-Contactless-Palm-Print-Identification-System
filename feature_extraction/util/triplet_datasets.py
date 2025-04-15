@@ -2,6 +2,57 @@ import random
 from PIL import Image
 from torch.utils.data import Dataset
 import torch
+import numpy as np
+import sys
+# def apply_cutmix(image1, image2, beta=1.0):
+
+#     np_img1 = np.array(image1)
+#     np_img2 = np.array(image2)
+    
+#     lam = np.random.beta(beta, beta)
+#     H, W, C = np_img1.shape
+#     cut_rat = np.sqrt(1. - lam)
+#     cut_w = int(W * cut_rat)
+#     cut_h = int(H * cut_rat)
+    
+#     cx = np.random.randint(W)
+#     cy = np.random.randint(H)
+    
+#     bbx1 = np.clip(cx - cut_w // 2, 0, W)
+#     bby1 = np.clip(cy - cut_h // 2, 0, H)
+#     bbx2 = np.clip(cx + cut_w // 2, 0, W)
+#     bby2 = np.clip(cy + cut_h // 2, 0, H)
+    
+#     np_img1[bby1:bby2, bbx1:bbx2, :] = np_img2[bby1:bby2, bbx1:bbx2, :]
+    
+#     return Image.fromarray(np_img1)
+
+def apply_mixing(image1, image2, beta=1.0):
+    """
+    Blends two images by mixing their pixel values using a weight sampled from a Beta distribution.
+    
+    Parameters:
+        image1 (PIL.Image): The first image.
+        image2 (PIL.Image): The second image.
+        beta (float): Beta distribution parameter; default is 1.0.
+        
+    Returns:
+        PIL.Image: The resulting mixed image.
+    """
+    # Convert images to numpy arrays (float32 for computation)
+    np_img1 = np.array(image1).astype(np.float32)
+    np_img2 = np.array(image2).astype(np.float32)
+    
+    # Sample lambda from the Beta distribution
+    lam = np.random.beta(beta, beta)
+    
+    # Create the mixed image: weighted average of image1 and image2
+    mixed_img = lam * np_img1 + (1 - lam) * np_img2
+    
+    # Ensure the pixel values are valid and of type uint8
+    mixed_img = np.clip(mixed_img, 0, 255).astype(np.uint8)
+    
+    return Image.fromarray(mixed_img)
 
 class TripletDataset(Dataset):
     def __init__(
@@ -112,3 +163,16 @@ def triplet_collate_fn(batch):
     negatives = torch.stack(negatives)  # Batch of all negative images
     all_images = torch.cat([anchors, positives, negatives], dim=0)
     return all_images, len(anchors), len(negatives) // len(anchors)
+
+if __name__ == "__main__":
+    
+    image1_path = r'C:\Vkev\Repos\Mamba-Environment\Dataset\Palm-Print\AugmentationTest\00001_s1_0.bmp'
+    image2_path = r'C:\Vkev\Repos\Mamba-Environment\Dataset\Palm-Print\AugmentationTest\00002_s2_0.bmp'
+    
+    # Open the images and convert them to RGB.
+    image1 = Image.open(image1_path).convert("RGB")
+    image2 = Image.open(image2_path).convert("RGB")
+    
+    result_image = apply_mixing(image1, image2, beta=1)
+    
+    result_image.show()
