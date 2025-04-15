@@ -1,6 +1,14 @@
-from .patch_embedding import PatchEmbed
-from .stem import StemBlock
-from .resnet import *
+try:
+    from model.utils import print_total_params
+    from model.patch_embedding import PatchEmbed
+    from model.stem import StemBlock
+    from model.resnet import *
+except ImportError:
+    from patch_embedding import PatchEmbed
+    from stem import StemBlock
+    from resnet import *
+    from utils import print_total_params
+    
 from positional_encodings.torch_encodings import PositionalEncoding1D, Summer
 from fightingcv_attention.attention.SelfAttention import ScaledDotProductAttention
 import torch
@@ -128,3 +136,17 @@ class MyModel(nn.Module):
         x = self.head(x)
         
         return x
+
+
+if __name__ == "__main__":
+    batch_size = 2
+    x = torch.randn(batch_size, 3, 224, 224).cuda()
+
+    model = MyModel().cuda()
+    print("Model summary:")
+    print(model)
+    print_total_params(model)
+    y = model(x)
+    print("Input shape: ", x.shape)
+    print("Output shape:", y.shape)  
+

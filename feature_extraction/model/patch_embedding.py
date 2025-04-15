@@ -3,8 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
-# from .PatchEmbedding import *
-from .utils import *
+try:
+    from utils import print_total_params
+except ImportError:
+    from model.utils import print_total_params
 import torch.nn.init as init
 
 
