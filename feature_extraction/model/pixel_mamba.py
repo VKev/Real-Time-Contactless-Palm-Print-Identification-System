@@ -33,14 +33,11 @@ class PixelMamba(nn.Module):
         B, C, H, W = x.shape
         assert H == self.H and W == self.W, "Height/Width mismatch!"
 
-        x_flat_1 = x.permute(0, 2, 3, 1).reshape(B, -1, C)  # (B, H*W, 3)
-        x_flipped = x.flip(dims=[2, 3])  # flips H and W
-        x_flat_2 = x_flipped.permute(0, 2, 3, 1).reshape(B, -1, C)  # (B, H*W, 3)
-
+        x_flat_1 = x.permute(0, 2, 3, 1).reshape(B, -1, C)
+        x_flipped = x.flip(dims=[2, 3])
+        x_flat_2 = x_flipped.permute(0, 2, 3, 1).reshape(B, -1, C)
         x_cat = torch.cat([x_flat_1, x_flat_2], dim=1)
-
         x_embed = self.fc0(x_cat)
-
         out = self.mamba(x_embed)
 
         out_half = out[:, H*W:, :] #get last half of the sequence
