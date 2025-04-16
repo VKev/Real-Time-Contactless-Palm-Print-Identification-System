@@ -26,7 +26,7 @@ class ActivationModule(nn.Module):
         else:
             raise ValueError(f"Unsupported activation type: {act_type}")
 
-    def forward(self, x):
+def forward(self, x):
         return self.activation(x)
 
 class MixedOp(nn.Module):

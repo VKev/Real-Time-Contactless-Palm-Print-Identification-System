@@ -36,7 +36,7 @@ class ResidualBlock(nn.Module):
                 init.constant_(m.bias, 0)
     
     def forward(self, x):
-        residual = x
+        residual = x.clone()
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
