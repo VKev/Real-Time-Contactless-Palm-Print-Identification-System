@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-
 activation_ops = {
     'relu': nn.ReLU,
     'silu': nn.SiLU,
@@ -9,7 +8,6 @@ activation_ops = {
     'sigmoid': nn.Sigmoid,
     'conv1d': lambda: nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(1, 3), padding=(0, 1)),
 }
-
 
 class ActivationModule(nn.Module):
     def __init__(self, act_type='relu', inplace=True):
