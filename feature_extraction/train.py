@@ -9,11 +9,18 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
-from model import MyModel
-from util import TripletDataset, CombinedDataset, triplet_collate_fn
-from util import BatchAllTripletLoss
-from util import transform, augmentation
-from util import load_images
+try:
+    from model import MyModel
+    from util import TripletDataset, CombinedDataset, triplet_collate_fn
+    from util import BatchAllTripletLoss
+    from util import transform, augmentation
+    from util import load_images
+except ImportError:
+    from feature_extraction.model import MyModel
+    from feature_extraction.util import TripletDataset, CombinedDataset, triplet_collate_fn
+    from feature_extraction.util import BatchAllTripletLoss
+    from feature_extraction.util import transform, augmentation
+    from feature_extraction.util import load_images
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')

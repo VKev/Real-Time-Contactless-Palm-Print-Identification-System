@@ -6,7 +6,11 @@ from PIL import Image
 try:
     from utils import print_total_params
 except ImportError:
-    from model.utils import print_total_params
+    try:
+        from model.utils import print_total_params
+    except ImportError:
+        from feature_extraction.model.utils import print_total_params
+        
 import torch.nn.init as init
 
 

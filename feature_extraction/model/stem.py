@@ -5,7 +5,10 @@ import torch.nn.init as init
 try:
     from utils import print_total_params
 except ImportError:
-    from model.utils import print_total_params
+    try:
+        from model.utils import print_total_params
+    except ImportError:
+        from feature_extraction.model.utils import print_total_params
 
 class StemBlock(nn.Module):
     def __init__(self):

@@ -4,10 +4,16 @@ try:
     from model.stem import StemBlock
     from model.resnet import *
 except ImportError:
-    from patch_embedding import PatchEmbed
-    from stem import StemBlock
-    from resnet import *
-    from utils import print_total_params
+    try:
+        from patch_embedding import PatchEmbed
+        from stem import StemBlock
+        from resnet import *
+        from utils import print_total_params
+    except ImportError:
+        from feature_extraction.model.utils import print_total_params
+        from feature_extraction.model.patch_embedding import PatchEmbed
+        from feature_extraction.model.stem import StemBlock
+        from feature_extraction.model.resnet import *
     
 from positional_encodings.torch_encodings import PositionalEncoding1D, Summer
 from fightingcv_attention.attention.SelfAttention import ScaledDotProductAttention

@@ -1,14 +1,22 @@
 import torch
 import os
 import argparse
-from model import MyModel
+try:
+    from model import MyModel
+    from util import ImageDataset
+    from util import transform
+    from util import get_image_paths
+    from model.utils import print_total_params
+except ImportError:
+    from feature_extraction.model import MyModel
+    from feature_extraction.util import ImageDataset
+    from feature_extraction.util import transform
+    from feature_extraction.util import get_image_paths
+    from feature_extraction.model.utils import print_total_params
+    
 from torch.utils.data import DataLoader
-from util import ImageDataset
-from util import transform
-from util import get_image_paths
 from tqdm import tqdm
 from sklearn.metrics.pairwise import euclidean_distances
-from model.utils import print_total_params
 import numpy as np
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
