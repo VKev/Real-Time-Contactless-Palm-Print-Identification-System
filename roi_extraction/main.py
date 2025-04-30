@@ -120,7 +120,10 @@ if __name__ == "__main__":
                     line_length = int(np.hypot(x2 - x1, y2 - y1))
 
                     angle = calculate_hand_rotation(landmarks, frame.shape)
-                    rotated_frame, rot_matrix = rotate_image(frame, angle)
+                    offset = 120
+                    if label == 'Left':
+                        offset = 120 - 80
+                    rotated_frame, rot_matrix = rotate_image(frame, angle, offset_angle=offset)
                     rotated_landmarks = get_rotated_landmarks(landmarks, rot_matrix, frame.shape)
 
                     # 3) GET THE CENTER OF THE PALM IN THE ROTATED FRAME

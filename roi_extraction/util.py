@@ -3,7 +3,6 @@ import numpy as np
 import mediapipe as mp
 from collections import namedtuple
 
-# ---------- heavy objects -------------------------------------------
 _LM = namedtuple("Landmark", ["x", "y", "z"])
 _mp = mp.solutions.hands
 _hands = _mp.Hands(
@@ -14,7 +13,6 @@ _hands = _mp.Hands(
     min_tracking_confidence=0.5,
 )
 
-# Landmarks used for palm centre
 _PALM_IDS = [
     _mp.HandLandmark.WRIST,
     _mp.HandLandmark.THUMB_CMC,
@@ -87,10 +85,13 @@ def extract_palm_roi(frame_bgr, min_size=100, max_size=600, scale=1.1):
         return None
 
     lms = res.multi_hand_landmarks[0]
+    label = res.multi_handedness[0].classification[0].label
     baseline = _calculate_baseline(lms, w, h)
     angle    = _calculate_hand_rotation(lms, w, h)
-
-    rot_img, M    = _rotate_image(frame_bgr, angle)
+    offset = 120
+    if label == 'Left':
+        offset = 120 - 70
+    rot_img, M    = _rotate_image(frame_bgr, angle, offset)
     rot_lms       = _rotate_landmarks(lms, M, w, h)
     cx, cy        = _calculate_palm_center(rot_lms, w, h)
 
@@ -100,7 +101,6 @@ def extract_palm_roi(frame_bgr, min_size=100, max_size=600, scale=1.1):
     x2, y2 = min(w, cx + half), min(h, cy + half)
     roi    = rot_img[y1:y2, x1:x2]
 
-    # Resize to ensure fixed size as in the original code
     if roi.size == 0:
         return None
     roi_resized = cv2.resize(roi, (roi_sz, roi_sz))
