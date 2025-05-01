@@ -23,10 +23,7 @@ def stream(cap, to_roi=False, to_gray=False):
         if to_roi:
             roi = extract_palm_roi(frame)
             if roi is not None:
-                # apply your new preprocess step
                 pre = preprocess(roi)
-                # since `pre` is single-channel, convert back to BGR if you
-                # want to display it alongside the color feed:
                 frame = cv2.cvtColor(pre, cv2.COLOR_GRAY2BGR)
 
         elif to_gray:
