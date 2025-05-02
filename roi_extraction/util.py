@@ -22,9 +22,7 @@ _PALM_IDS = [
     _mp.HandLandmark.PINKY_MCP,
 ]
 
-# --------------------------------------------------------------------
 def _calculate_baseline(lms, w, h):
-    """Pixel distance between INDEX_FINGER_MCP and PINKY_MCP."""
     idx = lms.landmark[_mp.HandLandmark.INDEX_FINGER_MCP]
     pky = lms.landmark[_mp.HandLandmark.PINKY_MCP]
     x1, y1 = idx.x * w, idx.y * h
@@ -32,7 +30,6 @@ def _calculate_baseline(lms, w, h):
     return np.hypot(x2 - x1, y2 - y1)
 
 def _calculate_hand_rotation(lms, w, h):
-    """Angle of the line WRIST→INDEX_FINGER_MCP in degrees."""
     wrist = lms.landmark[_mp.HandLandmark.WRIST]
     idx   = lms.landmark[_mp.HandLandmark.INDEX_FINGER_MCP]
     x1, y1 = wrist.x * w, wrist.y * h
@@ -40,10 +37,6 @@ def _calculate_hand_rotation(lms, w, h):
     return np.degrees(np.arctan2(y2 - y1, x2 - x1))
 
 def _rotate_image(img, angle_deg, offset=120):
-    """
-    Rotate about image center by (angle_deg + offset).
-    Uses cv2.getRotationMatrix2D and cv2.warpAffine.
-    """
     h, w = img.shape[:2]
     center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle_deg + offset, 1.0)
@@ -51,9 +44,6 @@ def _rotate_image(img, angle_deg, offset=120):
     return rotated, M
 
 def _rotate_landmarks(lms, M, w, h):
-    """
-    Apply affine matrix M to each landmark (in pixel coords → rotate → back to normalized). 
-    """
     out = []
     for lm in lms.landmark:
         x, y = lm.x * w, lm.y * h  # Remove int() to preserve precision
@@ -62,21 +52,11 @@ def _rotate_landmarks(lms, M, w, h):
     return out
 
 def _calculate_palm_center(rot_lms, w, h):
-    """Mean of the 6 palm landmarks in pixel coords."""
     xs = [rot_lms[i].x * w for i in _PALM_IDS]
     ys = [rot_lms[i].y * h for i in _PALM_IDS]
     return int(np.mean(xs)), int(np.mean(ys))
 
 def extract_palm_roi(frame_bgr, min_size=100, max_size=600, scale=1.1):
-    """
-    1. Detect hand landmarks (MediaPipe Hands).
-    2. Compute baseline, angle.
-    3. Rotate image & landmarks.
-    4. Find palm center in rotated frame.
-    5. Compute dynamic ROI size from baseline*scale.
-    6. Slice square ROI and return.
-    """
-    # Mirror the frame horizontally as in the original code
     frame_bgr = cv2.flip(frame_bgr, 1)
     h, w = frame_bgr.shape[:2]
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)

@@ -1,3 +1,4 @@
 *.pt
 **/qdrant_data/*
 **/__pycache__/*
+*.task

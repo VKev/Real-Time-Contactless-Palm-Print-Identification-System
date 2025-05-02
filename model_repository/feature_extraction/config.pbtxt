@@ -2,6 +2,13 @@ name: "feature_extraction"
 platform: "pytorch_libtorch"
 max_batch_size: 5
 
+dynamic_batching {
+  preferred_batch_size: 5        # try to reach batch 5
+  max_queue_delay_microseconds: 2000   # wait ≤ 2 ms
+}
+
+instance_group [{ kind: KIND_GPU }]
+
 input [
   {
     name: "INPUT__0"
