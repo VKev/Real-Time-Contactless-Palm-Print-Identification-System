@@ -3,7 +3,7 @@ import torch
 from feature_extraction.model import MyModel
 
 model = MyModel().cuda()
-ckpt = torch.load("feature_extraction/checkpoints/attempt_5.pth")
+ckpt = torch.load("feature_extraction/checkpoints/attempt_6.pth")
 model.load_state_dict(ckpt['model_state_dict'])
 model.eval()
 

@@ -18,11 +18,8 @@ def preprocess(
                          interpolation=cv2.INTER_AREA)
 
     img = resized.astype(np.float32) / 255.0
-
     img = (img - mean) / std
-
     img = np.repeat(img[np.newaxis, ...], 3, axis=0)
-
     batch = img[np.newaxis, ...]
 
     return batch, resized

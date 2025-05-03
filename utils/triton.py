@@ -24,7 +24,6 @@ class TritonClient:
     ) -> dict:
         return self._do_infer(model_name, inputs, outputs, model_version, timeout, async_mode=False)
 
-    # fire-and-forget async inference
     def infer_async(
         self,
         model_name: str,
@@ -49,13 +48,11 @@ class TritonClient:
         callback=None,
         user_data=None
     ):
-        # resolve outputs if not provided
         if outputs is None:
             meta = self.client.get_model_metadata(model_name=model_name,
                                                   model_version=model_version)
             outputs = [o.name for o in meta.outputs]
 
-        # prepare InferInput objects
         infer_inputs = []
         for name, array in inputs.items():
             arr = np.ascontiguousarray(array)
@@ -66,13 +63,10 @@ class TritonClient:
             infer_in.set_data_from_numpy(arr)
             infer_inputs.append(infer_in)
 
-        # prepare InferRequestedOutput objects
         infer_outputs = [InferRequestedOutput(o) for o in outputs]
 
         if async_mode:
-            # Triton gRPC client requires a callable callback
             cb = callback or (lambda ud, result, error: None)
-            # callback signature: callback(user_data, InferResult, error)
             return self.client.async_infer(
                 model_name=model_name,
                 inputs=infer_inputs,
@@ -82,7 +76,6 @@ class TritonClient:
                 timeout=timeout
             )
         else:
-            # synchronous path
             resp = self.client.infer(
                 model_name=model_name,
                 inputs=infer_inputs,

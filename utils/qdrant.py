@@ -13,10 +13,7 @@ from qdrant_client.models import (
     ScoredPoint,
 )
 
-
 class QdrantHelper:
-    """Thin wrapper around one QdrantClient instance."""
-
     def __init__(
         self,
         host: str = "localhost",
@@ -48,8 +45,6 @@ class QdrantHelper:
         if self.client.collection_exists(collection_name):
             self.client.delete_collection(collection_name)
             print(f"[INFO] Collection '{collection_name}' deleted.")
-
-    # ---------- point helpers ---------- #
 
     def insert_vectors(
         self,
@@ -126,7 +121,6 @@ if __name__ == "__main__":
 
     qd = QdrantHelper()
 
-    # qd.delete_collection(COL)
     qd.ensure_collection(COL, vector_size=DIM)
 
     base_vec = [random.random() for _ in range(DIM)]
@@ -140,3 +134,5 @@ if __name__ == "__main__":
     
     query_vec = [20 * x for x in base_vec]
     qd.search(COL, query_vec, top_k=5)
+
+    qd.delete_collection(COL)
