@@ -8,7 +8,6 @@ import uvicorn
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import RedirectResponse, StreamingResponse, PlainTextResponse
 import gradio as gr
-from turbojpeg import TurboJPEG, TJPF_GRAY, TJSAMP_444
 
 from roi_extraction.util import extract_palm_roi
 from roi_extraction.gesture import OpenPalmDetector
