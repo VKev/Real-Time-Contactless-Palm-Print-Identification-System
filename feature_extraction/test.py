@@ -1,91 +1,217 @@
-import torch
-import os
 import argparse
-try:
-    from model import MyModel
-    from util import ImageDataset
-    from util import transform
-    from util import get_image_paths
-    from model.utils import print_total_params
-except ImportError:
-    from feature_extraction.model import MyModel
-    from feature_extraction.util import ImageDataset
-    from feature_extraction.util import transform
-    from feature_extraction.util import get_image_paths
-    from feature_extraction.model.utils import print_total_params
-    
+from pathlib import Path
+import sys
+
+import torch
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from sklearn.metrics.pairwise import euclidean_distances
-import numpy as np
+
+import matplotlib.pyplot as plt
+import seaborn as sns  # new
+from sklearn.manifold import TSNE
+
+try:
+    import umap.umap_ as umap  # type: ignore
+except ModuleNotFoundError as e:
+    sys.stderr.write(
+        "[ERROR] Could not import 'umap.umap_'. Make sure you have installed\n"
+        "        the correct package with:  pip install --upgrade umap-learn\n"
+    )
+    raise e
+
+from model import MyModel
+from util import ImageDataset, transform, get_image_paths
+from model.utils import print_total_params
+import pandas as pd  # new
+
+# ============================= CLI ============================= #
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Training parameters for the model.')
-    parser.add_argument('--checkpoint_path', type=str, default="checkpoints/checkpoint_epoch_29.pth", help='Path to checkpoint file for continuing training')
-    parser.add_argument('--validate_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test", help='Path to validate folder')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
-                        choices=['cpu', 'cuda'], help='Device to use for training (cpu or cuda)')
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run inference on a trained model, compute Top-1 accuracy with "
+            "NearestNeighbors, and visualise embeddings with UMAP & t-SNE via Seaborn."
+        )
+    )
+    parser.add_argument("-c", "--checkpoint", type=Path,
+                        default=Path("checkpoints/attempt_8.pth"), help="Model checkpoint")
+    parser.add_argument("-d", "--data-dir", type=Path,
+                        default=Path("../../Dataset/Palm-Print/TrainAndTest/test"), help="Image directory")
+    parser.add_argument("-b", "--batch-size", type=int, default=8)
+    parser.add_argument("-j", "--num-workers", type=int, default=4)
+    parser.add_argument("--device", choices=["cpu", "cuda"],
+                        default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--vis-dir", type=Path, default=Path("visualize"))
+    parser.add_argument("--vis-classes", type=int, default=20, metavar="N",
+                        help="Plot at most N classes (default: 20)")
     return parser.parse_args()
 
+# =========================== Helpers =========================== #
 
-def run_inference(image_paths, batch_size=1, device ="cuda"):
-    dataset = ImageDataset(image_paths, transform)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
-    all_outputs = []
-    progress_bar = tqdm(total=len(dataloader), desc="Processing Batches", unit="batch")
+def load_model(ckpt: Path, device: str) -> torch.nn.Module:
+    state = torch.load(ckpt, map_location=device)
+    model = MyModel().to(device)
+    model.load_state_dict(state["model_state_dict"])
+    model.eval()
+    return model
 
-    with torch.no_grad():
-        for input_tensor in dataloader:
-            input_tensor = input_tensor.to(device)
-            batch_outputs = model.forward(input_tensor)
-            all_outputs.append(batch_outputs)
-            progress_bar.update(1)
-    progress_bar.close()
+def extract_embeddings(model: torch.nn.Module,
+                       paths: list[Path],
+                       batch: int,
+                       workers: int,
+                       device: str) -> np.ndarray:
+    loader = DataLoader(
+        ImageDataset(paths, transform),
+        batch_size=batch,
+        shuffle=False,
+        num_workers=workers,
+        pin_memory=(device == "cuda")
+    )
+    vecs: list[np.ndarray] = []
+    for imgs in tqdm(loader, desc="Extracting embeddings"):
+        imgs = imgs.to(device)
+        with torch.no_grad():
+            vecs.append(model(imgs).cpu().numpy())
+    return np.vstack(vecs)
 
-    return torch.cat(all_outputs, dim=0)
+def compute_top1(emb: np.ndarray, paths: list[Path] | list[str]):
+    labels = np.array([
+        Path(p).stem.split("_")[-1]
+        if isinstance(p, (str, Path)) else str(p).split("_")[-1]
+        for p in paths
+    ])
+    knn = NearestNeighbors(n_neighbors=2, metric="euclidean").fit(emb)
+    _, idx = knn.kneighbors(emb)
+    return float((labels == labels[idx[:, 1]]).mean()), labels
 
-def extract_class(image_path):
-    filename = os.path.basename(image_path)
-    filename_without_ext = os.path.splitext(filename)[0]
-    return filename_without_ext.split("_")[-1]
+def save_umap_plot(emb: np.ndarray,
+                   labels: np.ndarray,
+                   vis_dir: Path,
+                   limit_classes: int):
+    """Plot up to `limit_classes` distinct label groups with Seaborn & UMAP."""
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    sns.set(style="whitegrid")  # seaborn style
 
-def l2_normalize(embeddings):
-    l2_norm = torch.norm(embeddings, p=2, dim=1, keepdim=True)
-    normalized_embeddings = embeddings / l2_norm
-    return normalized_embeddings
+    # select classes
+    unique = np.unique(labels)
+    sel = unique[:limit_classes]
+    mask = np.isin(labels, sel)
+    emb_sel = emb[mask]
+    lbl_sel = labels[mask]
 
-def print_shape_hook(module, input, output):
-        print(f"Shape: {output.shape}")
+    # UMAP projection
+    proj = umap.UMAP(
+        n_components=2,
+        n_neighbors=15,
+        min_dist=0.1,
+        metric="euclidean",
+        random_state=42,
+        n_epochs=200
+    ).fit_transform(emb_sel)
+
+    # build DataFrame
+    df = pd.DataFrame({
+        "UMAP-1": proj[:, 0],
+        "UMAP-2": proj[:, 1],
+        "label": lbl_sel
+    })
+
+    # plot
+    plt.figure(figsize=(8, 8))
+    sns.scatterplot(
+        data=df,
+        x="UMAP-1",
+        y="UMAP-2",
+        hue="label",
+        palette=sns.color_palette("hsv", len(sel)),
+        s=20,
+        alpha=0.6,
+        legend=False
+    )
+    plt.title(f"UMAP Projection (first {limit_classes} classes)")
+    plt.tight_layout()
+
+    out = vis_dir / f"embeddings_umap_top{limit_classes}.png"
+    plt.savefig(out, dpi=300)
+    plt.close()
+    print(f"[INFO] UMAP visualisation saved → {out}")
+
+def save_tsne_plot(emb: np.ndarray,
+                   labels: np.ndarray,
+                   vis_dir: Path,
+                   limit_classes: int):
+    """Plot up to `limit_classes` distinct label groups with Seaborn & t-SNE."""
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    sns.set(style="whitegrid")
+
+    # select classes
+    unique = np.unique(labels)
+    sel = unique[:limit_classes]
+    mask = np.isin(labels, sel)
+    emb_sel = emb[mask]
+    lbl_sel = labels[mask]
+
+    # t-SNE projection
+    proj = TSNE(
+        n_components=2,
+        perplexity=7,
+        n_iter=2000,
+        metric="euclidean",
+        random_state=42
+    ).fit_transform(emb_sel)
+
+    # build DataFrame
+    df = pd.DataFrame({
+        "t-SNE-1": proj[:, 0],
+        "t-SNE-2": proj[:, 1],
+        "label": lbl_sel
+    })
+
+    # plot
+    plt.figure(figsize=(8, 8))
+    sns.scatterplot(
+        data=df,
+        x="t-SNE-1",
+        y="t-SNE-2",
+        hue="label",
+        palette=sns.color_palette("hsv", len(sel)),
+        s=20,
+        alpha=0.6,
+        legend=False
+    )
+    plt.title(f"t-SNE Projection (first {limit_classes} classes)")
+    plt.tight_layout()
+
+    out = vis_dir / f"embeddings_tsne_top{limit_classes}.png"
+    plt.savefig(out, dpi=300)
+    plt.close()
+    print(f"[INFO] t-SNE visualisation saved → {out}")
+
+def main():
+    args = parse_args()
+    print(f"[INFO] Loading model from {args.checkpoint} on {args.device}")
+    model = load_model(args.checkpoint, args.device)
+    print_total_params(model)
+
+    paths = [Path(p) for p in get_image_paths(str(args.data_dir))]
+    print(f"[INFO] Found {len(paths)} images in {args.data_dir}")
+
+    emb = extract_embeddings(
+        model, paths,
+        args.batch_size,
+        args.num_workers,
+        args.device
+    )
+    acc, lbls = compute_top1(emb, paths)
+    print(f"[RESULT] Top-1 Accuracy: {acc:.4f}")
+
+    print("[INFO] Building UMAP plot …")
+    save_umap_plot(emb, lbls, args.vis_dir, args.vis_classes)
+
+    print("[INFO] Building t-SNE plot …")
+    save_tsne_plot(emb, lbls, args.vis_dir, args.vis_classes)
 
 if __name__ == "__main__":
-    
-    args = parse_args()
-    checkpoint = torch.load(args.checkpoint_path)
-    model = MyModel().to(args.device)
-    
-    # hook_handle = model.localbranch.convblock3[3].register_forward_hook(print_shape_hook)
-    
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print(model)
-    print_total_params(model)
-    train_images_path = get_image_paths(args.validate_path)
-    image_classes = [extract_class(p) for p in train_images_path]
-
-    vectors = run_inference(train_images_path, batch_size=8 , device=args.device)
-
-    vectors_np = vectors.cpu().numpy()
-    distances = euclidean_distances(vectors_np)
-    closest_indices = distances.argsort(axis=1)[:, 1]
-    image_classes = np.array(image_classes)  # Ensure it's a NumPy array
-
-    # Calculate matches using vectorized comparison
-    matches = image_classes == image_classes[closest_indices]
-    
-    # Sum up the matches directly
-    score = np.sum(matches)
-
-    accuracy = score / len(image_classes)
-
-    print(f"Top 1 Accuracy: {accuracy:.4f}")
-
-
+    main()

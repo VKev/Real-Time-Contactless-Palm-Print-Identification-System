@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train the model')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         choices=['cpu', 'cuda'], help='Device to use for training (cpu or cuda)')
+    parser.add_argument('--wandb', type=str, default='your wandb key', help='your wandb key')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
 
     parser.add_argument('--train_negatives', type=int, default=1, help='Number of negatives for training')
@@ -87,7 +88,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
 
 
 def setup_wandb():
-    wandb.login(key="b8b74d6af92b4dea7706baeae8b86083dad5c941")
+    wandb.login(key=args.wandb)
     wandb.init(
         project="My-Model",
     )
