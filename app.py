@@ -1,4 +1,3 @@
-# app.py (Optimized Version)
 import time
 import asyncio
 from contextlib import asynccontextmanager
@@ -11,59 +10,44 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import RedirectResponse, StreamingResponse, PlainTextResponse
 import gradio as gr
 import requests
-# Assuming roi_extraction and utils are structured correctly
+
 try:
     from roi_extraction.util import extract_palm_roi
-    from roi_extraction.gesture import OpenPalmDetector
     from utils.preprocess import preprocess
     from utils.triton import TritonClient
     from utils.qdrant import QdrantHelper
+    from depth_estimation.utils import resize, interpolate_np, apply_depth_mask_np
 except ImportError as e:
     logging.error(f"ImportError: {e}. Make sure paths are correct.")
-    # Fallback or dummy implementations if needed for testing structure
     def extract_palm_roi(frame): return frame if frame is not None else None
-    class OpenPalmDetector: pass
-    def preprocess(roi): return np.zeros((1, 3, 224, 224), dtype=np.float32), roi
-    from utils.triton import TritonClient # Assume this imports
-    from utils.qdrant import QdrantHelper # Assume this imports
+    def preprocess(roi): return np.zeros((1, 3, 224, 224), dtype=np.float32), np.zeros((224, 224), dtype=np.uint8)
+    def resize(frame, input_size): return np.zeros((1, 3, input_size, input_size), dtype=np.float32), (frame.shape[0], frame.shape[1]) if frame is not None else (0, 0)
+    def interpolate_np(depth_out, h, w): return np.zeros((1, h, w), dtype=np.float32)
+    def apply_depth_mask_np(frame, depth_norm, threshold): return frame if frame is not None else np.zeros((224, 224, 3), dtype=np.uint8)
 
-# Setup basic logging
+    from utils.triton import TritonClient
+    from utils.qdrant import QdrantHelper
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Global State (managed by lifespan) ---
-# Using asyncio primitives for thread-safety and async compatibility
 shutdown_event = asyncio.Event()
 inference_queue: asyncio.Queue | None = None
-
-# --- Helper Functions ---
+depth_queue: asyncio.Queue | None = None # Queue for depth results
 
 def push_log(app: FastAPI, msg: str):
-    """Update the latest log message in app state (thread-safe update if needed)"""
-    # In a real-world scenario with multiple workers potentially logging,
-    # consider using a thread-safe mechanism if app.state itself isn't inherently safe
-    # For this structure, direct assignment within the Qdrant worker task is likely okay.
     app.state.latest_log = msg
-    logger.info(msg) # Also log to console/file
+    logger.info(msg)
 
 def configure_cap_full_hd(cap: cv2.VideoCapture):
-    # Configure desired resolution - check return values if specific resolutions are critical
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     logger.info(f"Attempted to set resolution to 1280x720")
-    # Optional: Log actual resolution
-    # width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    # height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    # logger.info(f"Actual resolution: {width}x{height}")
-
 
 def get_cap(app: FastAPI) -> cv2.VideoCapture | None:
-    """Safely get the current camera capture object."""
     return app.state.cap_map.get(app.state.cam_idx)
 
-
 async def process_inference_results(app: FastAPI):
-    """Worker task to process results from the inference queue."""
     global inference_queue
     if not inference_queue:
         logger.error("Inference queue not initialized!")
@@ -75,49 +59,41 @@ async def process_inference_results(app: FastAPI):
     logger.info("Starting inference result processing worker.")
     while not shutdown_event.is_set():
         try:
-            # Wait for an item from the queue
             idx, vec, t_in, is_register, label = await inference_queue.get()
             t_out = time.time()
             latency = (t_out - t_in) * 1000
 
             try:
                 if is_register:
-                    current_label = label or f"palm_{int(time.time())}" # Ensure label exists
+                    current_label = label or f"palm_{int(time.time())}"
                     log_msg = (
                         f"[#{idx}] REGISTER @ ({latency:.1f}ms) "
                         f"label: {current_label}"
                     )
-                    # Run blocking Qdrant insert in thread pool
                     await loop.run_in_executor(
-                        None, # Default executor (thread pool)
+                        None,
                         qdrant.insert_vectors,
                         "palm_vectors", [vec], [idx], [{"label": current_label}]
                     )
                 else:
-                    # Run blocking Qdrant search in thread pool
                     matches = await loop.run_in_executor(
-                        None, qdrant.search, "palm_vectors", vec, 1 # Search only top 1 for verification
+                        None, qdrant.search, "palm_vectors", vec, 1
                     )
 
                     if matches:
                         best = matches[0]
-                        # Adjusted threshold example - tune based on observed scores
-                        # Higher score means MORE SIMILAR in EUCLID distance in this qdrant setup
-                        # Let's assume lower score is better match
-                        # Check qdrant distance metric used (EUCLID usually means lower = better)
-                        # Assuming Distance.EUCLID was used (lower is better)
-                        MATCH_THRESHOLD =80 # Example threshold - TUNE THIS VALUE!
+                        MATCH_THRESHOLD = 80
                         if best.score < MATCH_THRESHOLD:
                              log_msg = (
-                                f"[#{idx}] VERIFY @ ({latency:.1f}ms) "
-                                f"match: {best.payload.get('label')} "
-                                f"({best.score:.4f})" # More precision for scores
-                            )
+                                 f"[#{idx}] VERIFY @ ({latency:.1f}ms) "
+                                 f"match: {best.payload.get('label')} "
+                                 f"({best.score:.4f})"
+                             )
                         else:
-                            log_msg = (
-                                f"[#{idx}] VERIFY @ ({latency:.1f}ms) "
-                                f"Unregistered (Score: {best.score:.4f} > {MATCH_THRESHOLD})"
-                            )
+                             log_msg = (
+                                 f"[#{idx}] VERIFY @ ({latency:.1f}ms) "
+                                 f"Unregistered (Score: {best.score:.4f} >= {MATCH_THRESHOLD})"
+                             )
                     else:
                         log_msg = (
                             f"[#{idx}] VERIFY @ ({latency:.1f}ms) "
@@ -130,26 +106,22 @@ async def process_inference_results(app: FastAPI):
                 error_msg = f"[#{idx}] ERROR processing result @ {t_out:.3f}s: {e}"
                 push_log(app, error_msg)
             finally:
-                inference_queue.task_done() # Notify queue that task is complete
+                inference_queue.task_done()
 
         except asyncio.CancelledError:
             logger.info("Inference result processing task cancelled.")
             break
         except Exception as e:
             logger.error(f"Error in inference result processing loop: {e}")
-            await asyncio.sleep(1) # Avoid tight loop on unexpected errors
+            await asyncio.sleep(1)
 
     logger.info("Inference result processing worker stopped.")
 
-
-# --- Lifespan Management ---
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global inference_queue
+    global inference_queue, depth_queue
     logger.info("Application startup...")
 
-    # Initialize resources
     app.state.cap_map = {}
     app.state.cam_idx = 0
     try:
@@ -157,38 +129,22 @@ async def lifespan(app: FastAPI):
         if cap0.isOpened():
             configure_cap_full_hd(cap0)
             app.state.cap_map[0] = cap0
+            logger.info("Camera 0 opened successfully.")
         else:
             logger.error("Failed to open camera 0")
-            cap0.release() # Release if opened but failed config or check
+            cap0.release()
     except Exception as e:
         logger.error(f"Error initializing camera 0: {e}")
 
-    # Initialize Triton client
     try:
-        # Ensure TritonClient doesn't block excessively on init
         app.state.triton = TritonClient("localhost:8001", verbose=False)
-        # Optional: Add a readiness check/ping to Triton here
         logger.info("Triton client initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize Triton client: {e}")
-        app.state.triton = None # Mark as unavailable
+        app.state.triton = None
 
-    # Initialize Gesture Detector (assuming it's lightweight)
     try:
-        app.state.gesture = OpenPalmDetector(
-            "roi_extraction/gesture_recognizer/gesture_recognizer.task"
-        )
-        logger.info("Gesture detector initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize gesture detector: {e}")
-        app.state.gesture = None
-
-    # Initialize Qdrant client
-    try:
-        # Qdrant client init might involve network I/O - consider async if available
-        # or ensure it's reasonably fast.
         qd = QdrantHelper(host="localhost", port=6333, grpc_port=6334, prefer_grpc=True)
-        # Run ensure_collection in executor as it might block
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, qd.ensure_collection, "palm_vectors", 128)
         app.state.qdrant = qd
@@ -200,349 +156,516 @@ async def lifespan(app: FastAPI):
     app.state.latest_log = "System initialized"
     app.state.is_register = False
     app.state.current_label = None
+    app.state.background_removal_enabled = False # Default off
 
-    # Initialize asyncio Queue
     inference_queue = asyncio.Queue()
+    depth_queue = asyncio.Queue(maxsize=1) # Keep only the latest depth result
 
-    # Start the background worker task
     worker_task = asyncio.create_task(process_inference_results(app))
     logger.info("Background worker task created.")
 
-    yield # Application runs here
+    yield
 
-    # --- Cleanup ---
     logger.info("Application shutdown...")
-    shutdown_event.set() # Signal tasks to stop
+    shutdown_event.set()
 
-    # Wait for the worker task to finish
     if worker_task:
         try:
             await asyncio.wait_for(worker_task, timeout=5.0)
             logger.info("Background worker task finished.")
         except asyncio.TimeoutError:
-            logger.warning("Background worker task did not finish in time.")
+            logger.warning("Background worker task did not finish in time. Cancelling...")
             worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                logger.info("Background worker task cancelled successfully.")
         except Exception as e:
              logger.error(f"Error during worker task shutdown: {e}")
 
-
-    # Release camera captures
     for cap in app.state.cap_map.values():
         if cap and cap.isOpened():
             cap.release()
     logger.info("Camera captures released.")
 
-    # Cleanup other resources if necessary (e.g., close client connections if they have close methods)
-    if hasattr(app.state.triton, 'close'):
-        app.state.triton.close()
-        logger.info("Triton client closed.")
-    if hasattr(app.state.qdrant, 'close'):
-        # Assuming qdrant client might have a close method
-        app.state.qdrant.close()
-        logger.info("Qdrant client closed.")
+    if hasattr(app.state, 'triton') and app.state.triton and hasattr(app.state.triton, 'close'):
+        try:
+            # Assuming TritonClient has no close method or it's handled internally
+            # app.state.triton.close()
+            logger.info("Triton client closed (or managed internally).")
+        except Exception as e:
+            logger.error(f"Error closing Triton client: {e}")
+
+    if hasattr(app.state, 'qdrant') and app.state.qdrant and hasattr(app.state.qdrant, 'close'):
+        try:
+            # Assuming QdrantHelper might have a close method
+            # app.state.qdrant.close()
+            logger.info("Qdrant client closed (or managed internally).")
+        except Exception as e:
+            logger.error(f"Error closing Qdrant client: {e}")
 
     logger.info("Application shutdown complete.")
 
-
-# --- FastAPI App ---
 app = FastAPI(lifespan=lifespan)
 
-# --- Triton Callback ---
-
 def inference_callback(user_data, result, error):
-    """Callback from Triton: Puts data onto the asyncio queue."""
     global inference_queue
-    if not inference_queue: return # Queue might not be ready on startup/shutdown
+    if not inference_queue:
+        logger.warning("Inference queue not available in callback. Discarding result.")
+        return
 
     idx, t_in, is_register, current_label = user_data
 
     if error:
-        # Log error immediately, don't put on queue? Or put error marker?
-        # For now, log and skip queue. Can adjust if error processing needed downstream.
         logger.error(f"[Triton Callback Error #{idx}] {error}")
-        # Optionally push a log update immediately if critical
-        # loop = asyncio.get_running_loop()
-        # asyncio.run_coroutine_threadsafe(push_log_async(app, f"[#{idx}] INFERENCE ERROR"), loop)
     else:
         try:
-            # Ensure accessing result is safe (check result object type if needed)
-            vec = result.as_numpy("OUTPUT__0").squeeze().astype(float).tolist()
-            # Put data onto the queue for the async worker task
+            if result is None:
+                 logger.error(f"[Triton Callback Error #{idx}] Received None result.")
+                 return
+
+            vec_output = result.as_numpy("OUTPUT__0")
+            if vec_output is None:
+                 logger.error(f"[Triton Callback Error #{idx}] 'OUTPUT__0' not found in result.")
+                 return
+
+            vec = vec_output.squeeze().astype(float).tolist()
             try:
-                 inference_queue.put_nowait((idx, vec, t_in, is_register, current_label))
+                inference_queue.put_nowait((idx, vec, t_in, is_register, current_label))
             except asyncio.QueueFull:
-                 logger.warning(f"[#{idx}] Inference queue full. Discarding result.")
+                logger.warning(f"[#{idx}] Inference queue full. Discarding result.")
+            except Exception as q_err:
+                 logger.error(f"[#{idx}] Error putting result into queue: {q_err}")
 
         except Exception as e:
             logger.error(f"[Triton Callback Exception #{idx}] Error processing result: {e}")
 
+# Separate callback for depth inference
+def depth_inference_callback(user_data, result, error):
+    global depth_queue
+    if not depth_queue:
+        logger.warning("Depth queue not available in callback.")
+        return
 
-# --- Video Streaming ---
+    frame_idx = user_data # Could pass more context if needed
+
+    if error:
+        logger.error(f"[Depth Callback Error #{frame_idx}] {error}")
+        # Optionally put an error indicator in the queue
+        # depth_queue.put_nowait((frame_idx, None, error))
+    else:
+        try:
+            if result is None:
+                logger.error(f"[Depth Callback Error #{frame_idx}] Received None result.")
+                # Optionally put an error indicator
+                # depth_queue.put_nowait((frame_idx, None, "None result received"))
+                return
+
+            depth_output = result.as_numpy("OUTPUT__0") # Adjust output tensor name if needed
+            if depth_output is None:
+                logger.error(f"[Depth Callback Error #{frame_idx}] Depth output tensor not found in result.")
+                # Optionally put an error indicator
+                # depth_queue.put_nowait((frame_idx, None, "Output tensor missing"))
+                return
+
+            # Put the result in the queue (non-blocking, overwrite if full)
+            try:
+                # Clear the queue first to ensure only latest result is stored
+                while not depth_queue.empty():
+                    depth_queue.get_nowait()
+                depth_queue.put_nowait((frame_idx, depth_output, None)) # (idx, data, error)
+            except asyncio.QueueFull:
+                 # This should not happen with Queue(maxsize=1) after clearing, but handle just in case
+                 logger.warning(f"[#{frame_idx}] Depth queue was unexpectedly full after clearing. Discarding depth result.")
+            except Exception as q_err:
+                 logger.error(f"[#{frame_idx}] Error putting depth result into queue: {q_err}")
+
+        except Exception as e:
+             logger.error(f"[Depth Callback Exception #{frame_idx}] Error processing depth result: {e}")
+             # Optionally put an error indicator
+             # depth_queue.put_nowait((frame_idx, None, str(e)))
+
+
+def run_triton_infer(triton, model_name, inputs):
+    # Helper to run synchronous infer in executor
+    return triton.infer(model_name=model_name, inputs=inputs)
 
 async def stream(request: Request, triton: TritonClient | None, to_roi: bool = False):
-    """Async generator for video streaming, offloading blocking calls."""
+    global depth_queue
     if not triton:
         logger.error("Triton client not available for streaming.")
-        # Optionally yield a placeholder/error frame
+        err_img = np.zeros((224, 224, 3), dtype=np.uint8)
+        cv2.putText(err_img, "Triton Error", (10, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        ok, buf = cv2.imencode(".jpg", err_img)
+        if ok:
+             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
         return
 
     counter = 0
     loop = asyncio.get_running_loop()
+    latest_masked_frame = None # Store the latest frame after background removal
 
     while not shutdown_event.is_set():
         cap = get_cap(request.app)
         if not cap or not cap.isOpened():
-            logger.warning("Camera not ready or closed.")
-            # Yield a placeholder frame or break/sleep
-            frame = np.zeros((224, 224, 3), dtype=np.uint8)
-            ok = False
-            await asyncio.sleep(0.5) # Wait before retrying
-            # continue # Or break if camera is essential
+            logger.warning("Camera not ready or closed. Yielding placeholder.")
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.putText(frame, "No Camera Feed", (50, 360), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            ok = True
+            await asyncio.sleep(0.5)
         else:
-           # Run blocking cv2.read() in thread pool
-            ok, frame = await loop.run_in_executor(None, cap.read)
+            try:
+                ok, frame = await loop.run_in_executor(None, cap.read)
+            except Exception as e:
+                ok = False
+                logger.error(f"OpenCV error during cap.read(): {e}", exc_info=False)
 
-        if not ok:
-            logger.warning("Failed to read frame from camera.")
-            # Reuse last known frame or placeholder? For now, placeholder.
-            frame = np.zeros((224, 224, 3), dtype=np.uint8)
-            await asyncio.sleep(0.1) # Avoid busy-looping on read errors
-            # continue # Or break loop
+        if not ok or frame is None:
+            logger.warning("Failed to read frame from camera. Using placeholder.")
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.putText(frame, "Frame Read Error", (50, 360), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            ok = True
+            await asyncio.sleep(0.1)
 
-        img_to_encode = frame # Default to sending the raw frame
+        current_frame_to_process = frame.copy() # Work on a copy
+        processed_frame_for_display = current_frame_to_process # Default display is raw/error frame
+
+        if request.app.state.background_removal_enabled:
+            try:
+                # 1. Async Resize
+                resized_input, (h, w) = await loop.run_in_executor(None, resize, current_frame_to_process, 252)
+
+                # 2. Async Depth Inference (using sync infer in executor)
+                # Check if depth model name needs adjustment
+                depth_result = await loop.run_in_executor(
+                    None,
+                    run_triton_infer,
+                    triton,
+                    "depth_anything_v2", # Verify model name
+                    {"INPUT__0": resized_input}
+                )
+                depth_out = depth_result.get("OUTPUT__0") # Verify output tensor name
+
+                if depth_out is not None:
+                    # 3. Async Interpolate
+                    depth_map = await loop.run_in_executor(None, interpolate_np, depth_out, h, w)
+
+                    # Normalize depth map (CPU bound, quick)
+                    if depth_map.ndim == 3 and depth_map.shape[0] == 1:
+                        depth_map = depth_map[0]
+                    ptp = depth_map.ptp()
+                    if ptp == 0: ptp = 1e-6
+                    depth_norm = ((depth_map - depth_map.min()) / ptp * 255.0).astype("uint8")
+
+                    # 4. Async Masking
+                    if current_frame_to_process.shape[:2] != depth_norm.shape[:2]:
+                        depth_norm_resized = await loop.run_in_executor(
+                             None, cv2.resize, depth_norm, (current_frame_to_process.shape[1], current_frame_to_process.shape[0]), interpolation=cv2.INTER_NEAREST
+                         )
+                    else:
+                         depth_norm_resized = depth_norm
+
+                    latest_masked_frame = await loop.run_in_executor(
+                         None, apply_depth_mask_np, current_frame_to_process, depth_norm_resized, 0.6
+                    )
+                    # Use the masked frame for subsequent processing
+                    current_frame_to_process = latest_masked_frame
+                    processed_frame_for_display = latest_masked_frame # Show masked frame in raw feed
+
+                else:
+                     logger.warning("Depth inference failed. Skipping background removal for this frame.")
+                     # Keep original frame for ROI/display if depth fails
+                     processed_frame_for_display = current_frame_to_process
+
+
+            except Exception as bg_err:
+                 logger.error(f"Error during background removal: {bg_err}", exc_info=True)
+                 # Fallback to original frame if background removal fails
+                 processed_frame_for_display = frame
+                 current_frame_to_process = frame # Ensure ROI uses original if BG removal fails
+        else:
+             # If BG removal is off, the "processed" frame is just the raw frame
+             processed_frame_for_display = current_frame_to_process
+
+
+        img_to_encode = processed_frame_for_display # Default to showing the raw/masked frame
 
         if to_roi:
             try:
-                # Run potentially blocking ROI extraction in thread pool
-                # Note: extract_palm_roi might need access to app.state.gesture if it uses it
-                # Pass necessary state or make gesture detector thread-safe if required.
-                # For simplicity, assuming it's self-contained for now.
-                roi = await loop.run_in_executor(None, extract_palm_roi, frame)
+                # Use the potentially masked frame 'current_frame_to_process' for ROI extraction
+                roi = await loop.run_in_executor(None, extract_palm_roi, current_frame_to_process)
 
-                if roi is not None:
-                    # Run potentially blocking preprocessing in thread pool
-                    # Preprocess might return batch and processed image for display
+                if roi is not None and roi.size > 0:
                     batch, processed_img_for_display = await loop.run_in_executor(None, preprocess, roi)
 
-                    t_in = time.time()
-                    # Get current registration state AT THE TIME OF SENDING
-                    # This is slightly racy if state changes exactly between read and infer,
-                    # but generally acceptable for this kind of UI feedback.
-                    is_reg = request.app.state.is_register
-                    curr_label = request.app.state.current_label
+                    if batch is not None and processed_img_for_display is not None:
+                        t_in = time.time()
+                        is_reg = request.app.state.is_register
+                        curr_label = request.app.state.current_label
 
-                    # Schedule async inference (non-blocking)
-                    triton.infer_async(
-                        model_name="feature_extraction",
-                        inputs={"INPUT__0": batch},
-                        callback=inference_callback,
-                        # Pass necessary context for the callback
-                        user_data=(counter, t_in, is_reg, curr_label),
-                    )
-                    counter += 1
-                    # Update frame to show the processed ROI
-                    if processed_img_for_display.ndim == 2: # Grayscale
-                        img_to_encode = cv2.cvtColor(processed_img_for_display, cv2.COLOR_GRAY2BGR)
-                    else: # Assume already BGR-like
-                         img_to_encode = processed_img_for_display
+                        triton.infer_async(
+                            model_name="feature_extraction",
+                            inputs={"INPUT__0": batch},
+                            callback=inference_callback,
+                            user_data=(counter, t_in, is_reg, curr_label),
+                        )
+                        counter += 1
+
+                        if processed_img_for_display.ndim == 2:
+                             img_to_encode = cv2.cvtColor(processed_img_for_display, cv2.COLOR_GRAY2BGR)
+                        elif processed_img_for_display.ndim == 3:
+                             img_to_encode = processed_img_for_display
+                        else:
+                             logger.warning("Processed image has unexpected dimensions. Using placeholder.")
+                             img_to_encode = np.zeros((224, 224, 3), dtype=np.uint8)
+                             cv2.putText(img_to_encode, "Proc Err", (10, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                    else:
+                         logger.warning("Preprocessing failed. Using placeholder ROI.")
+                         img_to_encode = np.zeros((224, 224, 3), dtype=np.uint8)
+                         cv2.putText(img_to_encode, "Prep Fail", (10, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
                 else:
-                    # No ROI found, send placeholder for ROI feed
                     img_to_encode = np.zeros((224, 224, 3), dtype=np.uint8)
+                    cv2.putText(img_to_encode, "No ROI", (10, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 1)
 
             except Exception as e:
-                logger.error(f"Error during ROI processing: {e}")
-                img_to_encode = np.zeros((224, 224, 3), dtype=np.uint8) # Fallback frame
+                logger.error(f"Error during ROI processing: {e}", exc_info=True)
+                img_to_encode = np.zeros((224, 224, 3), dtype=np.uint8)
+                cv2.putText(img_to_encode, "ROI Error", (10, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-
-        # Encode the frame (can also be moved to executor if it's slow)
         try:
-            ok, buf = await loop.run_in_executor(None, cv2.imencode, ".jpg", img_to_encode)
-            if ok:
+            if img_to_encode is None or img_to_encode.size == 0:
+                 logger.warning("img_to_encode is invalid before encoding. Skipping frame.")
+                 await asyncio.sleep(0.01)
+                 continue
+
+            ok_encode, buf = await loop.run_in_executor(None, cv2.imencode, ".jpg", img_to_encode)
+
+            if ok_encode and buf is not None:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
             else:
                 logger.warning("Failed to encode frame to JPEG.")
+        except cv2.error as cv_err:
+             logger.error(f"OpenCV error during encoding: {cv_err}. Image shape: {img_to_encode.shape}, dtype: {img_to_encode.dtype}")
         except Exception as e:
-            logger.error(f"Error encoding frame: {e}")
+            logger.error(f"Error encoding/yielding frame: {e}", exc_info=True)
 
-        # Small sleep to prevent extremely tight loop, allowing other tasks to run
-        await asyncio.sleep(0.005) # Adjust as needed
-
-
-# --- API Endpoints ---
+        await asyncio.sleep(0.005)
 
 @app.get("/logs/latest")
 async def get_latest_log(request: Request):
-    """Endpoint to retrieve latest log"""
-    return PlainTextResponse(request.app.state.latest_log)
+    log = request.app.state.latest_log or "No logs yet."
+    return PlainTextResponse(log)
 
 @app.get("/", include_in_schema=False)
-async def go_ui(): # Make async
+async def go_ui():
     return RedirectResponse(url="/ui")
-
 
 @app.post("/register")
 async def register(request: Request, body: dict = Body(...)):
-    """Switch the system to *registration* mode and remember the label."""
-    label = body.get("label") # Get label, handle if None
-    if not label:
+    label = body.get("label")
+    if not label or not isinstance(label, str) or not label.strip():
         label = f"palm_{int(time.time())}"
-        logger.warning(f"No label provided for registration, using default: {label}")
-    # Update state (assuming direct assignment is okay here, check thread safety if needed)
+        logger.warning(f"No valid label provided for registration, using default: {label}")
+    else:
+        label = label.strip()
+
     request.app.state.is_register = True
     request.app.state.current_label = label
     log_msg = f"Switched to REGISTER mode. Label: {label}"
     push_log(request.app, log_msg)
     return {"mode": "register", "label": label}
 
-
 @app.post("/verify")
 async def verify(request: Request):
-    """Switch the system to *verification* mode (no DB insertions)."""
-    # Update state
     request.app.state.is_register = False
     request.app.state.current_label = None
     log_msg = "Switched to VERIFY mode."
     push_log(request.app, log_msg)
     return {"mode": "verify"}
 
+@app.post("/toggle_background_removal")
+async def toggle_background_removal(request: Request):
+    current_state = not request.app.state.background_removal_enabled
+    request.app.state.background_removal_enabled = current_state
+    mode = "enabled" if current_state else "disabled"
+    push_log(request.app, f"Background removal {mode}.")
+    return {"background_removal": mode}
 
 @app.get("/video/raw", include_in_schema=False)
 async def raw_feed(request: Request):
-    """Raw video feed stream."""
     return StreamingResponse(
         stream(request, request.app.state.triton, to_roi=False),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
-
 @app.get("/video/roi", include_in_schema=False)
 async def roi_feed(request: Request):
-    """ROI video feed stream with inference triggering."""
     return StreamingResponse(
         stream(request, request.app.state.triton, to_roi=True),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
-# --- Gradio UI ---
+def switch_camera_sync(idx_str: str) -> str:
+    try:
+        idx = int(idx_str)
+    except (ValueError, TypeError):
+        msg = f"❌ Invalid camera index '{idx_str}'. Please select a number."
+        logger.error(msg)
+        return msg
 
-# Define Gradio UI interaction functions (run synchronously for Gradio)
-# These interact with the running FastAPI app via HTTP requests or direct state manipulation (carefully)
+    if not hasattr(app, 'state'):
+         msg = "❌ Application state not found. Cannot switch camera."
+         logger.error(msg)
+         return msg
 
-def switch_camera_sync(idx: int) -> str:
-    """Synchronous wrapper for Gradio to switch camera."""
-    # Note: This directly manipulates state. Consider thread safety if multiple
-    # UI interactions could happen concurrently. For Gradio, usually single-threaded.
-    idx = int(idx)
     prev_idx = app.state.cam_idx
     status_msg = ""
 
     if idx == prev_idx:
         return f"ℹ️ Already using camera {idx}"
 
-    # Blockingly open the new camera - this might hang the UI thread briefly
-    cap_new = cv2.VideoCapture(idx)
-    if not cap_new.isOpened():
-        cap_new.release()
-        status_msg = f"❌ Camera {idx} could not be opened."
-        logger.error(status_msg)
-        return status_msg
-    else:
-        configure_cap_full_hd(cap_new) # Configure the new camera
-        # Safely update the shared state
-        old_cap = app.state.cap_map.pop(prev_idx, None) # Remove old first
-        app.state.cap_map[idx] = cap_new
-        app.state.cam_idx = idx
-        status_msg = f"✅ Switched to camera {idx}"
-        logger.info(status_msg)
-        # Release the old camera if it existed
-        if old_cap and old_cap.isOpened():
-            old_cap.release()
-            logger.info(f"Released previous camera {prev_idx}")
-        return status_msg
+    cap_new = None
+    try:
+        logger.info(f"Attempting to open camera {idx}...")
+        cap_new = cv2.VideoCapture(idx)
+        if not cap_new or not cap_new.isOpened():
+            status_msg = f"❌ Camera {idx} could not be opened. Check connection/permissions."
+            logger.error(status_msg)
+            if cap_new: cap_new.release()
+            return status_msg
+        else:
+            configure_cap_full_hd(cap_new)
+            old_cap = app.state.cap_map.pop(prev_idx, None)
+            app.state.cap_map[idx] = cap_new
+            app.state.cam_idx = idx
+            status_msg = f"✅ Switched successfully to camera {idx}"
+            logger.info(status_msg)
 
+            if old_cap and old_cap.isOpened():
+                old_cap.release()
+                logger.info(f"Released previous camera {prev_idx}")
+            return status_msg
+    except Exception as e:
+        logger.error(f"Error switching to camera {idx}: {e}", exc_info=True)
+        if cap_new: cap_new.release()
+        return f"❌ Error switching to camera {idx}: {e}"
 
-# Use requests for interacting with the app's API from Gradio callbacks
-# This avoids potential threading issues with direct state manipulation from Gradio
-# Ensure the host/port match where uvicorn runs
-BASE_URL = "http://localhost:7000" # Make this configurable if needed
+BASE_URL = "http://localhost:7000"
 
 def call_register_api(label):
     try:
-        # Add a timeout to requests
-        response = requests.post(f"{BASE_URL}/register", json={"label": label}, timeout=5.0)
-        response.raise_for_status() # Raise exception for bad status codes (4xx, 5xx)
+        payload_label = label if isinstance(label, str) and label.strip() else None
+        payload = {"label": payload_label} if payload_label else {}
+
+        response = requests.post(f"{BASE_URL}/register", json=payload, timeout=5.0)
+        response.raise_for_status()
         return response.json()
+    except requests.exceptions.Timeout:
+        logger.error("API call to /register timed out.")
+        return {"error": "Request timed out"}
     except requests.exceptions.RequestException as e:
         logger.error(f"API call to /register failed: {e}")
-        return {"error": str(e)}
+        err_resp = {"error": str(e)}
+        if e.response is not None:
+             try:
+                 err_resp["detail"] = e.response.json()
+             except requests.exceptions.JSONDecodeError:
+                 err_resp["detail"] = e.response.text
+        return err_resp
     except Exception as e:
         logger.error(f"Error processing /register response: {e}")
-        return {"error": "Failed to process response"}
-
+        return {"error": f"Failed to process response: {e}"}
 
 def call_verify_api():
     try:
         response = requests.post(f"{BASE_URL}/verify", timeout=5.0)
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.Timeout:
+        logger.error("API call to /verify timed out.")
+        return {"error": "Request timed out"}
     except requests.exceptions.RequestException as e:
         logger.error(f"API call to /verify failed: {e}")
-        return {"error": str(e)}
+        err_resp = {"error": str(e)}
+        if e.response is not None:
+             try:
+                 err_resp["detail"] = e.response.json()
+             except requests.exceptions.JSONDecodeError:
+                 err_resp["detail"] = e.response.text
+        return err_resp
     except Exception as e:
         logger.error(f"Error processing /verify response: {e}")
-        return {"error": "Failed to process response"}
+        return {"error": f"Failed to process response: {e}"}
+
+def call_toggle_bg_api():
+    try:
+        response = requests.post(f"{BASE_URL}/toggle_background_removal", timeout=5.0)
+        response.raise_for_status()
+        status = response.json().get("background_removal", "Error")
+        return f"{status}"
+    except requests.exceptions.Timeout:
+        logger.error("API call to /toggle_background_removal timed out.")
+        return "Timeout"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API call to /toggle_background_removal failed: {e}")
+        return "API Error"
+    except Exception as e:
+        logger.error(f"Error processing /toggle_background_removal response: {e}")
+        return "Processing Error"
 
 def get_latest_log_for_ui():
-     # Direct state access okay here as it's just reading for UI update
-     # If latest_log updates were complex, might need a lock or async fetch
-     return app.state.latest_log
+    if hasattr(app, 'state') and hasattr(app.state, 'latest_log'):
+        return app.state.latest_log
+    return "Log state unavailable"
 
-# Define Gradio UI Layout
 with gr.Blocks(title="Palm‑Print Identification System") as ui:
-    gr.Markdown("### Palm‑Print Identification System")
+    gr.Markdown("# ✋ Palm‑Print Identification System")
     with gr.Row():
-        cam_dd = gr.Dropdown(choices=[0, 1, 2, 3], value=0, label="Camera Selection") # Added more options potentially
-        status = gr.Textbox(label="System Status", interactive=False)
-        logs = gr.Textbox(label="Latest Event", interactive=False, lines=1) # Single line might be better
+        with gr.Column(scale=1):
+            cam_dd = gr.Dropdown(choices=[str(i) for i in range(2)], value='0', label="Select Camera Index")
+            status = gr.Textbox(label="Camera Status", interactive=False, lines=1)
+            logs = gr.Textbox(label="Latest Event", interactive=False, lines=1, max_lines=1)
 
-        # Gradio Timer to poll for the latest log message from app state
-        # This runs in Gradio's loop, not FastAPI's
-        log_timer = gr.Timer(value=0.2) # Poll every 500ms
-        log_timer.tick(
-            fn=get_latest_log_for_ui, # Function to get log from app state
-            inputs=None,
-            outputs=[logs]
-        )
+            log_timer = gr.Timer(value=0.2) # Use interval instead of value
+            log_timer.tick(
+                fn=get_latest_log_for_ui,
+                inputs=None,
+                outputs=[logs]
+            )
 
-        # Connect camera dropdown change to the sync function
-        cam_dd.change(switch_camera_sync, cam_dd, status)
+            cam_dd.change(
+                fn=switch_camera_sync,
+                inputs=[cam_dd],
+                outputs=[status]
+            )
+        with gr.Column(scale=2):
+            with gr.Row():
+                 label_input = gr.Textbox(label="Registration Label", placeholder="Enter label (e.g., user_palm_left)")
+                 reg_btn = gr.Button("Register Mode", variant="primary")
+                 ver_btn = gr.Button("Verify Mode", variant="secondary")
+            with gr.Row():
+                reg_resp = gr.JSON(label="Register API Response")
+                ver_resp = gr.JSON(label="Verify API Response")
+            with gr.Row():
+                 bg_toggle_btn = gr.Button("Toggle Background Removal")
+                 bg_status_text = gr.Textbox(label="Background Removal Status", value="disabled", interactive=False)
 
-    with gr.Row():
-        label_input = gr.Textbox(label="Registration Label", placeholder="Enter label (e.g., user_palm)")
-
-        reg_btn = gr.Button("Register Mode")
-        reg_resp = gr.JSON(label="Register API Response")
-
-        ver_btn = gr.Button("Verify Mode")
-        ver_resp = gr.JSON(label="Verify API Response")
-
-    # Connect buttons to API call functions
-    reg_btn.click(fn=call_register_api, inputs=[label_input], outputs=[reg_resp])
-    ver_btn.click(fn=call_verify_api, inputs=None, outputs=[ver_resp])
-
-    with gr.Row(equal_height=True):
-        # Use Gradio Image components that update based on the stream endpoint
-        # Note: Standard HTML img src="/video/..." might be simpler if Gradio integration is complex
-        # For simplicity, using HTML img tag pointing to the FastAPI stream endpoints
-        gr.HTML(f'<img src="{BASE_URL}/video/raw" alt="Raw Feed" style="max-width:640px; height:auto; border:1px solid #ccc;">')
-        gr.HTML(f'<img src="{BASE_URL}/video/roi" alt="ROI Feed" style="max-width:224px; height:auto; border:1px solid #ccc;">')
+            reg_btn.click(fn=call_register_api, inputs=[label_input], outputs=[reg_resp])
+            ver_btn.click(fn=call_verify_api, inputs=None, outputs=[ver_resp])
+            bg_toggle_btn.click(fn=call_toggle_bg_api, inputs=None, outputs=[bg_status_text])
 
 
-# Mount Gradio app
+    with gr.Row(equal_height=False):
+         with gr.Column():
+             gr.Markdown("### Raw/Masked Camera Feed")
+             gr.HTML(f'<img src="{BASE_URL}/video/raw" alt="Raw Feed Loading..." style="width:100%; max-width:640px; height:auto; border:1px solid #ccc; background-color:#eee;">')
+         with gr.Column():
+             gr.Markdown("### Processed ROI Feed")
+             gr.HTML(f'<img src="{BASE_URL}/video/roi" alt="ROI Feed Loading..." style="width:100%; max-width:224px; height:auto; border:1px solid #ccc; background-color:#eee;">')
+
 gr.mount_gradio_app(app, ui, path="/ui")
 
-
 if __name__ == "__main__":
-    # Consider configuration for host/port
-    uvicorn.run(app, host="localhost", port=7000) # Use 0.0.0.0 to allow access from network
+    uvicorn.run(app, host="localhost", port=7000)

@@ -36,7 +36,7 @@ if __name__ == "__main__":
     model_depth = DepthAnythingV2(**depth_cfg).to(device)
     state_dict   = torch.load(MODEL_PATH_DEPTH, map_location="cpu")
     model_depth.load_state_dict(state_dict)
-    depth_input  = torch.randn(1, 3, 518, 518, device=device)
+    depth_input  = torch.randn(1, 3, 252, 252, device=device)
 
     export_model_to_triton(
         model      = model_depth,
