@@ -2,3 +2,4 @@
 **/qdrant_data/*
 **/__pycache__/*
 *.task
+*.pth

@@ -1,160 +1,185 @@
+import os
+import sys
+import argparse
+import cv2
+import numpy as np
+import shutil
+try:
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from util import extract_palm_roi
+except ImportError:
+    from roi_extraction.util import extract_palm_roi
+from utils.preprocess import preprocess
+
+
+def augment_image(
+    img: np.ndarray,
+    max_rot: float = 30.0,
+    blur_range: tuple[int, int] = (11, 21),
+    hue_delta: int = 10,
+    sat_range: tuple[float, float] = (0.8, 1.1),
+    val_range: tuple[float, float] = (0.8, 1.1),
+    brightness_delta: int = 30,
+    contrast_range: tuple[float, float] = (0.8, 1.1),
+    translation_frac: tuple[float, float] = (0.1, 0.1),
+    channel_shift_range: tuple[int, int] = (-20, 20),
+    gamma_range: tuple[float, float] = (0.8, 1.1)
+) -> np.ndarray:
+    h, w = img.shape[:2]
+
+    # Rotation
+    angle = np.random.uniform(-max_rot, max_rot)
+    M_rot = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    img = cv2.warpAffine(img, M_rot, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # Translation
+    tx = int(np.random.uniform(-translation_frac[0], translation_frac[0]) * w)
+    ty = int(np.random.uniform(-translation_frac[1], translation_frac[1]) * h)
+    M_trans = np.float32([[1, 0, tx], [0, 1, ty]])
+    img = cv2.warpAffine(img, M_trans, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # Blur
+    k = np.random.choice(range(blur_range[0], blur_range[1] + 1, 2))
+    img = cv2.GaussianBlur(img, (k, k), 0)
+
+    # HSV jitter
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    dh = np.random.uniform(-hue_delta, hue_delta)
+    hsv[..., 0] = (hsv[..., 0] + dh) % 180
+    ds = np.random.uniform(sat_range[0], sat_range[1])
+    hsv[..., 1] = np.clip(hsv[..., 1] * ds, 0, 255)
+    dv = np.random.uniform(val_range[0], val_range[1])
+    hsv[..., 2] = np.clip(hsv[..., 2] * dv, 0, 255)
+    img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    # Brightness shift
+    delta_b = np.random.randint(-brightness_delta, brightness_delta + 1)
+    img = cv2.convertScaleAbs(img, alpha=1.0, beta=delta_b)
+
+    # Contrast scaling
+    alpha_c = np.random.uniform(contrast_range[0], contrast_range[1])
+    img = cv2.convertScaleAbs(img, alpha=alpha_c, beta=0)
+
+    # Gamma correction
+    gamma = np.random.uniform(gamma_range[0], gamma_range[1])
+    invGamma = 1.0 / gamma
+    table = (np.arange(256) / 255.0) ** invGamma * 255
+    table = table.astype(np.uint8)
+    img = cv2.LUT(img, table)
+
+    # Channel shifts
+    chans = cv2.split(img)
+    shifted = []
+    for c in chans:
+        delta = np.random.randint(channel_shift_range[0], channel_shift_range[1] + 1)
+        c = np.clip(c.astype(int) + delta, 0, 255).astype(np.uint8)
+        shifted.append(c)
+    img = cv2.merge(shifted)
+
+    return img
+
+
+def process_and_save(img: np.ndarray, out_path: str) -> bool:
+    """
+    Extract palm ROI, preprocess it, and save 224×224 grayscale crop.
+    """
+    roi = extract_palm_roi(img)
+    if roi is None:
+        return False
+    _, resized_gray = preprocess(roi)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return cv2.imwrite(out_path, resized_gray)
+
+
+def process_folder(class_folder: str, class_id: int, num_aug: int):
+    IMG_EXT = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+    files = sorted(f for f in os.listdir(class_folder)
+                   if os.path.splitext(f)[1].lower() in IMG_EXT)
+
+    for idx, fname in enumerate(files, start=1):
+        path = os.path.join(class_folder, fname)
+        img = cv2.imread(path)
+        if img is None:
+            print(f"⚠️ Cannot read {path}; skipping.")
+            continue
+
+        # Save original ROI
+        roi_out = os.path.join(class_folder, f"{idx}_0_{class_id}.png")
+        if process_and_save(img, roi_out):
+            print(f"✅ ROI saved: {roi_out}")
+        else:
+            print(f"ℹ️ No hand in original: {path}")
+
+        # Generate augmentations
+        for v in range(1, num_aug + 1):
+            aug = augment_image(img)
+            # Save raw augmented image
+            raw_out = os.path.join(class_folder, f"{idx}_{v}_{class_id}_raw.png")
+            cv2.imwrite(raw_out, aug)
+            print(f"✅ Raw augmentation saved: {raw_out}")
+
+            # Then save ROI of augmented
+            roi_aug_out = os.path.join(class_folder, f"{idx}_{v}_{class_id}.png")
+            if process_and_save(aug, roi_aug_out):
+                print(f"✅ ROI saved: {roi_aug_out}")
+            else:
+                print(f"ℹ️ No hand in augmentation #{v}: {path}")
+
+
+def organize_outputs(root_dir: str):
+    """
+    Move all ROI images (without '_raw') to the root folder,
+    and move all raw augmentations ('_raw.png') into a subfolder 'raw_augmentation'.
+    """
+    raw_folder = os.path.join(root_dir, 'raw_augmentation')
+    os.makedirs(raw_folder, exist_ok=True)
+
+    # Traverse class subfolders
+    for entry in os.listdir(root_dir):
+        class_path = os.path.join(root_dir, entry)
+        if not os.path.isdir(class_path) or entry == 'raw_augmentation':
+            continue
+        for fname in os.listdir(class_path):
+            src = os.path.join(class_path, fname)
+            if not fname.endswith('.png'):
+                continue
+            if fname.endswith('_raw.png'):
+                dst = os.path.join(raw_folder, fname)
+            else:
+                dst = os.path.join(root_dir, fname)
+            shutil.move(src, dst)
+    print(f"Organized outputs: ROI images → {root_dir}, raw → {raw_folder}")
+
+
+def main(root_dir: str, num_aug: int):
+    # entries = sorted(os.listdir(root_dir))
+    # class_folders = [e for e in entries if os.path.isdir(os.path.join(root_dir, e))]
+    # class_id_map = {name: i for i, name in enumerate(class_folders, start=1)}
+
+    # for cls_name, cls_id in class_id_map.items():
+    #     folder = os.path.join(root_dir, cls_name)
+    #     print(f"\n→ Processing class '{cls_name}' (ID {cls_id})")
+    #     process_folder(folder, cls_id, num_aug)
+
+    # After generation, organize outputs
+    organize_outputs(root_dir)
+
 if __name__ == "__main__":
-    import cv2
-    import mediapipe as mp
-    import numpy as np
-    from collections import namedtuple
-
-    Landmark = namedtuple("Landmark", ["x", "y", "z"])
-
-    class HandLandmarks:
-        def __init__(self, landmarks):
-            self.landmark = landmarks
-
-    mp_hands = mp.solutions.hands
-    mp_drawing = mp.solutions.drawing_utils
-    hands = mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=1,
-        model_complexity=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+    parser = argparse.ArgumentParser(
+        description="Extract & preprocess ROI from originals + augmentations."
     )
-
-    def calculate_palm_center(landmarks, image_shape):
-        h, w, _ = image_shape
-        indices = [mp_hands.HandLandmark.WRIST,
-                mp_hands.HandLandmark.THUMB_CMC,
-                mp_hands.HandLandmark.INDEX_FINGER_MCP,
-                mp_hands.HandLandmark.MIDDLE_FINGER_MCP,
-                mp_hands.HandLandmark.RING_FINGER_MCP,
-                mp_hands.HandLandmark.PINKY_MCP]
-
-        xs = [landmarks.landmark[i].x * w for i in indices]
-        ys = [landmarks.landmark[i].y * h for i in indices]
-        zs = [landmarks.landmark[i].z for i in indices]
-
-        return int(np.mean(xs)), int(np.mean(ys)), np.mean(zs)
-
-    def calculate_hand_rotation(landmarks, image_shape):
-        h, w, _ = image_shape
-        wrist = landmarks.landmark[mp_hands.HandLandmark.WRIST]
-        index_mcp = landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
-
-        x1, y1 = wrist.x * w, wrist.y * h
-        x2, y2 = index_mcp.x * w, index_mcp.y * h
-
-        angle_rad = np.arctan2(y2 - y1, x2 - x1)
-        return np.degrees(angle_rad)
-
-    def get_rotated_landmarks(landmarks, rot_matrix, image_shape):
-        h, w, _ = image_shape
-        rotated = []
-        for lm in landmarks.landmark:
-            x, y = int(lm.x * w), int(lm.y * h)
-            point = np.array([x, y, 1])
-            rx, ry = rot_matrix.dot(point)[:2]
-            rotated.append(Landmark(rx / w, ry / h, lm.z))
-        return HandLandmarks(rotated)
-
-    def rotate_image(image, angle, offset_angle=120):
-        center = (image.shape[1] // 2, image.shape[0] // 2)
-        rot_matrix = cv2.getRotationMatrix2D(center, angle + offset_angle, 1.0)
-        rotated_img = cv2.warpAffine(image, rot_matrix, (image.shape[1], image.shape[0]))
-        return rotated_img, rot_matrix
-
-    def extract_palm_roi(image, cx, cy, size=224):
-        """
-        Extracts a square ROI centered at (cx, cy), with side length = size.
-        """
-        half = size // 2
-        h, w = image.shape[:2]
-        x1, y1 = max(0, cx - half), max(0, cy - half)
-        x2, y2 = min(w, cx + half), min(h, cy + half)
-        return image[y1:y2, x1:x2]
-
-    def draw_depth_info(image, cx, cy, cz):
-        cv2.circle(image, (cx, cy), 8, (255, 0, 0), -1)
-        cv2.putText(image, f'Depth: {cz:.2f}', (cx + 10, cy - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
-
-    def main():
-        cap = cv2.VideoCapture(0)
-        
-        if not cap.isOpened():
-            print("Error: Could not open webcam.")
-            return
-
-        # Make the palm ROI window resizable
-        cv2.namedWindow('Palm ROI', cv2.WINDOW_NORMAL)
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            frame = cv2.flip(frame, 1)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands.process(rgb_frame)
-
-            if results.multi_hand_landmarks:
-                for idx, landmarks in enumerate(results.multi_hand_landmarks):
-                    label = results.multi_handedness[idx].classification[0].label
-                    wrist = landmarks.landmark[mp_hands.HandLandmark.WRIST]
-                    h, w, _ = frame.shape
-
-                    # Draw the label on the original frame
-                    cv2.putText(frame, f'{label} Hand',
-                                (int(wrist.x * w), int(wrist.y * h)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-
-                    # 1) DRAW THE LINE BETWEEN INDEX_FINGER_MCP AND PINKY_MCP
-                    index_mcp = landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
-                    pinky_mcp = landmarks.landmark[mp_hands.HandLandmark.PINKY_MCP]
-
-                    x1, y1 = int(index_mcp.x * w), int(index_mcp.y * h)
-                    x2, y2 = int(pinky_mcp.x * w), int(pinky_mcp.y * h)
-
-                    cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 255), 3)
-
-                    # 2) MEASURE THAT LINE'S LENGTH IN PIXELS
-                    line_length = int(np.hypot(x2 - x1, y2 - y1))
-
-                    angle = calculate_hand_rotation(landmarks, frame.shape)
-                    offset = 120
-                    if label == 'Left':
-                        offset = 120 - 80
-                    rotated_frame, rot_matrix = rotate_image(frame, angle, offset_angle=offset)
-                    rotated_landmarks = get_rotated_landmarks(landmarks, rot_matrix, frame.shape)
-
-                    # 3) GET THE CENTER OF THE PALM IN THE ROTATED FRAME
-                    cx, cy, cz = calculate_palm_center(rotated_landmarks, rotated_frame.shape)
-                    draw_depth_info(rotated_frame, cx, cy, cz)
-
-                    # 4) DYNAMIC ROI SIZE BASED ON THE LINE LENGTH
-                    #    You can tweak the formula below depending on how large you want the ROI to get.
-                    #    Here, we use a minimum of 224 and a maximum of 600 as an example.
-                    min_roi = 100
-                    max_roi = 600
-                    roi_size = int(np.clip(line_length * 1.1, min_roi, max_roi))
-
-                    palm_roi = extract_palm_roi(rotated_frame, cx, cy, roi_size)
-                    if palm_roi.size > 0:
-                        # Resize the palm ROI to the roi_size for display
-                        palm_roi_resized = cv2.resize(palm_roi, (roi_size, roi_size))
-
-                        # Show and resize the "Palm ROI" window
-                        cv2.imshow('Palm ROI', palm_roi_resized)
-                        cv2.resizeWindow('Palm ROI', roi_size, roi_size)
-
-                    cv2.imshow('Hand Tracking (Rotated)', rotated_frame)
-
-            cv2.imshow('Hand Tracking', frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-        cap.release()
-        cv2.destroyAllWindows()
-
-
-    main()
+    parser.add_argument(
+        "--root_dir",
+        default=r"C:\\Vkev\\Repos\\Mamba-Environment\\Dataset\\Palm-Print\\RealisticSet\\Roi",
+        help="Root folder with class subfolders."
+    )
+    parser.add_argument(
+        "--num_aug",
+        type=int,
+        default=9,
+        help="Number of augmentations per image."
+    )
+    args = parser.parse_args()
+    main(args.root_dir, args.num_aug)

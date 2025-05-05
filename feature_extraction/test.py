@@ -20,10 +20,15 @@ except ModuleNotFoundError as e:
         "        the correct package with:  pip install --upgrade umap-learn\n"
     )
     raise e
-
-from model import MyModel
-from util import ImageDataset, transform, get_image_paths
-from model.utils import print_total_params
+try:
+    from model import MyModel
+    from model.utils import print_total_params
+    from util import ImageDataset, transform, get_image_paths
+except ImportError:
+    from feature_extraction.model.utils import print_total_params
+    from feature_extraction.model import MyModel
+    from feature_extraction.util import ImageDataset, transform, get_image_paths
+    
 import pandas as pd  # new
 
 # ============================= CLI ============================= #
