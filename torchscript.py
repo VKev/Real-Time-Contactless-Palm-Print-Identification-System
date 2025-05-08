@@ -46,7 +46,7 @@ if __name__ == "__main__":
         version    = version
     )
 
-    MODEL_PATH_FEAT = "feature_extraction/checkpoints/attempt_7.pth"
+    MODEL_PATH_FEAT = "feature_extraction/checkpoints/attempt_8.pth"
     model_feat = MyModel().to(device)
     ckpt       = torch.load(MODEL_PATH_FEAT, map_location="cpu")
     if "model_state_dict" in ckpt:

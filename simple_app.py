@@ -10,7 +10,6 @@ from fastapi.responses import RedirectResponse, StreamingResponse, PlainTextResp
 import gradio as gr
 
 from roi_extraction.util import extract_palm_roi
-from roi_extraction.gesture import OpenPalmDetector
 from utils.preprocess import preprocess
 from utils.triton import TritonClient
 from utils.qdrant import QdrantHelper
@@ -44,9 +43,6 @@ async def lifespan(app: FastAPI):
     app.state.cam_idx = 0
 
     app.state.triton = TritonClient("localhost:8001", verbose=False)
-    app.state.gesture = OpenPalmDetector(
-        "roi_extraction/gesture_recognizer/gesture_recognizer.task"
-    )
     qd = QdrantHelper(host="localhost", port=6333, grpc_port=6334, prefer_grpc=True)
     qd.ensure_collection("palm_vectors", vector_size=128)
     app.state.qdrant = qd

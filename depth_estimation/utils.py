@@ -6,6 +6,7 @@ from torchvision.transforms import Compose
 from typing import Union
 import numpy as np
 from PIL import Image
+import time
 try:
     from depth_anything_v2.util.transform import Resize, NormalizeImage, PrepareForNet
 except ImportError:
@@ -42,54 +43,41 @@ def apply_depth_mask(image: np.ndarray, depth_map: np.ndarray, threshold: float 
     return Image.fromarray(masked_image)
 
 
-def apply_depth_mask_np(image: np.ndarray, depth_map: np.ndarray, threshold: float = 0.5) -> Image.Image:
-    """
-    Applies a depth-based mask to the input image. Pixels with depth values below the threshold are blacked out.
-
-    Parameters:
-        image (np.ndarray): The original RGB image as a NumPy array.
-        depth_map (np.ndarray): The corresponding depth map as a NumPy array with values in [0, 255].
-        threshold (float): Threshold value between 0 and 1 to determine which pixels to keep.
-
-    Returns:
-        PIL.Image.Image: The masked image.
-    """
-    # Ensure depth_map is in the range [0, 255]
-    if depth_map.max() <= 1.0:
-        depth_map = (depth_map * 255).astype(np.uint8)
+def apply_depth_mask_np(image: np.ndarray, depth_map: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+    if depth_map.dtype == np.uint8:
+        thr = int(threshold * 255)
     else:
-        depth_map = depth_map.astype(np.uint8)
+        thr = threshold
 
-    threshold_value = int(threshold * 255)
-    mask = depth_map >= threshold_value
+    out = np.empty_like(image)
 
-    masked_image = np.zeros_like(image)
-    masked_image[mask] = image[mask]
+    if image.ndim == depth_map.ndim + 1:
+        np.multiply(image, depth_map[..., None] > thr, out=out)
+    else:
+        np.multiply(image, depth_map > thr, out=out)
 
-    return masked_image
+    return out
 
-def resize(raw_image, input_size=518):        
-    transform = Compose([
-        Resize(
-            width=input_size,
-            height=input_size,
-            resize_target=False,
-            keep_aspect_ratio=False,
-            ensure_multiple_of=14,
-            resize_method='lower_bound',
-            image_interpolation_method=cv2.INTER_CUBIC,
-        ),
-        NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        PrepareForNet(),
-    ])
-    
+
+_MEAN   = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_STD    = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+_INV255 = 1.0 / 255.0
+
+def resize(raw_image, input_size=518):   
     h, w = raw_image.shape[:2]
-    
-    image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB) / 255.0
-    
-    image = transform({'image': image})['image']
-    image = torch.from_numpy(image).unsqueeze(0)
-    
+
+    resized = cv2.resize(
+        raw_image,
+        (input_size, input_size),
+        interpolation=cv2.INTER_CUBIC
+    )
+
+    img = resized[..., ::-1].astype(np.float32) * _INV255
+    img = (img - _MEAN) / _STD
+
+    img = img.transpose(2, 0, 1)
+    image = torch.from_numpy(img).unsqueeze(0)
+
     return image, (h, w)
 
 
@@ -130,24 +118,18 @@ def interpolate_np(
     h: int,
     w: int
 ) -> np.ndarray:
-    if isinstance(depth, dict):
-        depth = next(iter(depth.values()))
+    arr = depth[0]
 
-    arr = depth
+    resized = cv2.resize(arr, (w, h), interpolation=cv2.INTER_LINEAR)
 
-    if arr.ndim == 3 and arr.shape[0] == 1:
-        arr = arr[0]
-
-    if arr.ndim == 2:
-        return cv2.resize(arr, (w, h), interpolation=cv2.INTER_LINEAR)
-
-    elif arr.ndim == 3:
-        batch_resized = []
-        for i in range(arr.shape[0]):
-            batch_resized.append(
-                cv2.resize(arr[i], (w, h), interpolation=cv2.INTER_LINEAR)
-            )
-        return np.stack(batch_resized, axis=0)
-
-    else:
-        raise ValueError(f"Unsupported depth array shape: {depth.shape}")
+    normalized = cv2.normalize(
+        src=resized,
+        dst=None,
+        alpha=0,
+        beta=255,
+        norm_type=cv2.NORM_MINMAX,
+        dtype=cv2.CV_8U
+    )
+    return normalized
+    
+    

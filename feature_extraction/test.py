@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 import sys
+import random
 
 import torch
 import numpy as np
@@ -11,6 +12,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns  # new
 from sklearn.manifold import TSNE
+from sklearn.metrics import roc_curve, auc  # new
+import pandas as pd  # needed for visualizations
 
 try:
     import umap.umap_ as umap  # type: ignore
@@ -28,8 +31,6 @@ except ImportError:
     from feature_extraction.model.utils import print_total_params
     from feature_extraction.model import MyModel
     from feature_extraction.util import ImageDataset, transform, get_image_paths
-    
-import pandas as pd  # new
 
 # ============================= CLI ============================= #
 
@@ -41,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("-c", "--checkpoint", type=Path,
-                        default=Path("checkpoints/attempt_8.pth"), help="Model checkpoint")
+                        default=Path("checkpoints/attempt_6.pth"), help="Model checkpoint")
     parser.add_argument("-d", "--data-dir", type=Path,
                         default=Path("../../Dataset/Palm-Print/TrainAndTest/test"), help="Image directory")
     parser.add_argument("-b", "--batch-size", type=int, default=8)
@@ -51,6 +52,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vis-dir", type=Path, default=Path("visualize"))
     parser.add_argument("--vis-classes", type=int, default=20, metavar="N",
                         help="Plot at most N classes (default: 20)")
+    parser.add_argument("--register-ratio", type=float, default=0.5,
+                        help="Ratio of embeddings to use as registered samples (default: 0.5)")
+    parser.add_argument("--unregistered-ratio", type=float, default=0.5,
+                        help="Ratio of classes to treat as unregistered (default: 0.5)")
     return parser.parse_args()
 
 # =========================== Helpers =========================== #
@@ -90,6 +95,138 @@ def compute_top1(emb: np.ndarray, paths: list[Path] | list[str]):
     knn = NearestNeighbors(n_neighbors=2, metric="euclidean").fit(emb)
     _, idx = knn.kneighbors(emb)
     return float((labels == labels[idx[:, 1]]).mean()), labels
+
+def split_embeddings(embeddings: np.ndarray, paths: list[Path], register_ratio: float, unregistered_ratio: float):
+    """
+    Split embeddings into register and verifier sets.
+    
+    Args:
+        embeddings: The extracted feature embeddings
+        paths: List of paths to the original images
+        register_ratio: Ratio of data to use for registration
+        unregistered_ratio: Ratio of classes to treat as unregistered
+    
+    Returns:
+        register_emb: Embeddings for registered samples
+        register_labels: Labels for registered samples
+        verifier_emb: Embeddings for verification samples
+        verifier_labels: Labels for verification samples
+        registered_classes: Set of registered classes
+    """
+    # Extract labels from paths
+    labels = np.array([Path(p).stem.split("_")[-1] for p in paths])
+    
+    # Get unique classes
+    unique_classes = np.unique(labels)
+    n_classes = len(unique_classes)
+    
+    # Determine registered and unregistered classes
+    n_unregistered = int(n_classes * unregistered_ratio)
+    n_registered = n_classes - n_unregistered
+    
+    # Randomly select classes to be registered
+    random.seed(42)  # For reproducibility
+    registered_classes = set(random.sample(list(unique_classes), n_registered))
+    unregistered_classes = set(unique_classes) - registered_classes
+    
+    # Create masks for register and verifier sets
+    registered_mask = np.array([label in registered_classes for label in labels])
+    
+    # For register set, take register_ratio of registered samples
+    register_indices = []
+    for cls in registered_classes:
+        cls_indices = np.where(labels == cls)[0]
+        n_register = int(len(cls_indices) * register_ratio)
+        register_indices.extend(cls_indices[:n_register])
+    
+    # All remaining registered samples and all unregistered samples go to verifier
+    verifier_indices = list(set(range(len(labels))) - set(register_indices))
+    
+    # Extract the actual embeddings and labels
+    register_emb = embeddings[register_indices]
+    register_labels = labels[register_indices]
+    verifier_emb = embeddings[verifier_indices]
+    verifier_labels = labels[verifier_indices]
+    
+    print(f"[INFO] Split data into {len(register_labels)} registered samples and {len(verifier_labels)} verification samples")
+    print(f"[INFO] {len(registered_classes)} registered classes, {len(unregistered_classes)} unregistered classes")
+    
+    return register_emb, register_labels, verifier_emb, verifier_labels, registered_classes
+
+def compute_verification_metrics(register_emb: np.ndarray, 
+                                register_labels: np.ndarray,
+                                verifier_emb: np.ndarray, 
+                                verifier_labels: np.ndarray,
+                                registered_classes: set):
+    """
+    Compute verification metrics at different distance thresholds.
+    
+    Args:
+        register_emb: Embeddings from registered samples
+        register_labels: Labels for registered samples
+        verifier_emb: Embeddings from verifier samples
+        verifier_labels: Labels for verifier samples
+        registered_classes: Set of registered class names
+    
+    Returns:
+        thresholds: Array of distance thresholds
+        fpr: False Positive Rate at each threshold
+        tpr: True Positive Rate at each threshold
+        auc: Area Under the Curve
+    """
+    # Compute distances between verifier and register embeddings
+    distances = []
+    ground_truth = []
+    
+    print("[INFO] Computing distances and verification metrics...")
+    
+    for i, v_emb in enumerate(tqdm(verifier_emb)):
+        # Compute distance to all registered embeddings
+        dists = np.sqrt(np.sum((register_emb - v_emb) ** 2, axis=1))
+        min_dist = np.min(dists)
+        distances.append(min_dist)
+        
+        # Ground truth: is this verifier sample from a registered class?
+        v_label = verifier_labels[i]
+        is_registered = v_label in registered_classes
+        ground_truth.append(is_registered)
+    
+    # Convert to numpy arrays
+    distances = np.array(distances)
+    ground_truth = np.array(ground_truth)
+    
+    # Compute ROC curve (invert distances since lower distance = higher similarity)
+    fpr, tpr, thresholds = roc_curve(ground_truth, -distances)
+    roc_auc = auc(fpr, tpr)
+    
+    # Convert thresholds back to positive distances
+    thresholds = -thresholds
+    
+    return thresholds, fpr, tpr, roc_auc
+
+def save_roc_curve(fpr: np.ndarray, 
+                  tpr: np.ndarray, 
+                  auc_score: float,
+                  vis_dir: Path):
+    """Create and save ROC curve visualization."""
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    
+    plt.figure(figsize=(10, 8))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {auc_score:.3f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
+    
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC) Curve')
+    plt.legend(loc="lower right")
+    plt.grid(True)
+    
+    out = vis_dir / "palm_verification_roc.png"
+    plt.savefig(out, dpi=300)
+    plt.close()
+    print(f"[INFO] ROC curve visualization saved → {out}")
 
 def save_umap_plot(emb: np.ndarray,
                    labels: np.ndarray,
@@ -217,6 +354,23 @@ def main():
 
     print("[INFO] Building t-SNE plot …")
     save_tsne_plot(emb, lbls, args.vis_dir, args.vis_classes)
+    
+    # Split data for verification experiments
+    print("[INFO] Setting up verification experiment...")
+    register_emb, register_labels, verifier_emb, verifier_labels, registered_classes = split_embeddings(
+        emb, paths, args.register_ratio, args.unregistered_ratio
+    )
+    
+    # Compute verification metrics
+    thresholds, fpr, tpr, roc_auc = compute_verification_metrics(
+        register_emb, register_labels, verifier_emb, verifier_labels, 
+        registered_classes
+    )
+    
+    # Visualize ROC curve
+    print("[INFO] Building ROC curve...")
+    save_roc_curve(fpr, tpr, roc_auc, args.vis_dir)
+    print("thresholds: ", thresholds)
 
 if __name__ == "__main__":
     main()

@@ -1,150 +1,187 @@
-# Palm-Print-Identification-System
+# Palm-Print Identification System V2
+
+## Table of Contents
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Running the Demos](#running-the-demos)
+  - [Palm Print Identification Demo](#palm-print-identification-demo)
+  - [Background Removal Demo](#background-removal-demo)
+- [Model Structure](#model-structure)
+- [Training and Testing](#training-and-testing)
+- [Model Conversion](#model-conversion)
 
 ## Prerequisites
 
-Before starting, ensure you have **Docker** installed:
+Before starting, ensure you have:
+- **Docker** installed on your system
+- Access to download model checkpoints (links provided below)
 
-Additionally, you will need to download a model checkpoint from Google Drive. Ensure you can access the provided link.
+## Installation
 
-## Demo Instructions
-
-### 1. Setup
-
-First, clone the repository:
+### 1. Clone Repository
 ```bash
 git clone https://github.com/VKev/Palm-Print-Identification-System-V2.git
+cd Palm-Print-Identification-System-V2
 ```
 
-Next, download the model checkpoint from: [Here](https://drive.google.com/file/d/1h28z9Es4IRkCnJTiPyqy41-qHPHrLH8Z/view?usp=sharing)
+### 2. Download Model Checkpoints
 
-After downloading, place the model.pt file in the following directory structure:
+#### Feature Extraction Model
+- Download from: [Feature Extraction Model](https://drive.google.com/file/d/1h28z9Es4IRkCnJTiPyqy41-qHPHrLH8Z/view?usp=sharing)
+
+#### Depth Estimation Model
+- Download from: [Depth Estimation Model](https://drive.google.com/file/d/1ThNm0Wugh3Oa3FkgGuQ9iaUIE7OVGcvj/view?usp=sharing)
+
+### 3. Setup Model Repository
+Place the downloaded models in the following structure:
 ```
 model_repository/
-└── 1/
-    └── model.pt
+├── feature_extraction/
+│   └── 1/
+│       └── model.pt
+└── depth_anything_v2/
+    └── 1/
+        └── model.pt
 ```
-**Note**: If the model_repository/1/ directories do not exist, create them manually.
 
-Then, install the required Python packages:
+**Note**: Create the directories manually if they don't exist.
+
+### 4. Install Dependencies
+Install all required packages using a single command:
 ```bash
 pip install -r requirements.txt
 ```
-**Tip**: It is recommended to use a virtual environment to avoid conflicts with system packages.
+**Tip**: Using a virtual environment is recommended.
 
-#### 2. Run
+## Running the Demos
 
-Ensure Docker is running on your system. Then, start the Docker services:
+### Palm Print Identification Demo
+
+1. Start Docker services:
 ```bash
 docker-compose up -d
 ```
 
-After the services are up, launch the application:
+2. Launch the main application:
 ```bash
 python app.py
 ```
-Once the application is running, access the demo at:
-`http://localhost:7000`
 
+Access the palm print identification demo at: `http://localhost:7000`
 
-## Train and Test
+### Background Removal Demo
 
-To train and test the model, you need to obtain the dataset first.
+1. Navigate to depth estimation directory:
+```bash
+cd depth_estimation
+```
 
-Request the dataset from the following links:
+2. Run the background removal application:
+```bash
+python app.py
+```
 
+Access the background removal demo at: `http://localhost:8000`
+
+## Model Structure
+
+The system consists of two main components:
+
+### 1. Feature Extraction Model
+- Responsible for extracting unique palm print features
+- Used for palm print matching and identification
+- Located in `model_repository/feature_extraction`
+
+![Feature Extraction Model Architecture](images/feature_extraction.png)
+
+### 2. Depth Estimation Model
+- Implements Depth Anything V2 for depth estimation
+- Enhances palm print analysis with depth information
+- Used for background removal in palm print images
+- Located in `model_repository/depth_anything_v2`
+- Based on [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2)
+
+## Training and Testing
+
+### Dataset Acquisition For Training
+
+To train the model, you'll need to request access to these datasets:
 - [IITD Palmprint Database](https://www4.comp.polyu.edu.hk/~csajaykr/IITD/Database_Palm.htm)
-
 - [PolyU 3D Palmprint Database](https://www4.comp.polyu.edu.hk/~csajaykr/myhome/database_request/3dhand/Hand3D.htm)
 
-After requesting, send an email to huynhkhang7452@gmail.com with proof of your request acceptance. The dataset will be sent to you within 1-2 days. Note that the dataset includes additional public datasets and is formatted for use with this code.
+After approval, email huynhkhang7452@gmail.com with proof of acceptance to receive the formatted training dataset.
 
-Once you receive the dataset, extract it to a directory of your choice, for example, /path/to/dataset.
+### Test Dataset
+The test dataset is readily available and can be downloaded from:
+[Test Dataset](https://drive.google.com/file/d/1kFcFewKQLcPXVdtInzIxcj2OSg2fZ_Dn/view?usp=drive_link)
 
-You can train and test the model using either the local Python environment or Docker.
+### Training Options
 
-#### Using Local Python Environment
+#### Local Environment
 
-Navigate to the feature_extraction directory, and install the required packages:
+1. Setup Feature Extraction:
 ```bash
-cd path/to/Palm-Print-Identification-System-V2/feature_extraction
-
+cd feature_extraction
 pip install -r requirements.txt
 ```
-Run the training script:
-```
+
+2. Train the model:
+```bash
 python train.py --train_path /path/to/dataset/TrainAndTest/train --test_path /path/to/dataset/TrainAndTest/test
 ```
-Replace /path/to/dataset with the actual path where you extracted the dataset.
 
-The checkpoints will be saved in the checkpoints/ directory within feature_extraction/.
-
-To resume training from a checkpoint:
-
+3. Resume training (optional):
 ```bash
-python train.py --train_path /path/to/dataset/TrainAndTest/train --test_path /path/to/dataset/TrainAndTest/test --checkpoint_path checkpoints/your_checkpoint_want_to_resume.pth
+python train.py --train_path /path/to/dataset/TrainAndTest/train --test_path /path/to/dataset/TrainAndTest/test --checkpoint_path checkpoints/your_checkpoint.pth
 ```
 
-To test the model:
-
+4. Test the model:
 ```bash
-python test.py --validate_path /path/to/dataset/TrainAndTest/test --checkpoint_path checkpoints/your_checkpoint_want_to_test.pth
+python test.py --validate_path /path/to/dataset/TrainAndTest/test --checkpoint_path checkpoints/your_checkpoint.pth
 ```
 
 #### Using Docker
 
-Pull the Docker image:
+1. Pull the Docker image:
 ```bash
 docker pull vkev25811/cuda12.4-cudnn9-devel:latest
 ```
 
-Run the Docker container, mounting the repository and the dataset directories:
-
+2. Run container:
 ```bash
-docker run -it --shm-size=8g --gpus all --name palm_print_container -p 8081:8081 -v /path/to/Palm-Print-Identification-System-V2:/app -v /path/to/dataset:/dataset -w /app vkev25811/cuda12.4-cudnn9-devel:latest
+docker run -it --shm-size=8g --gpus all --name palm_print_container \
+  -p 8081:8081 \
+  -v /path/to/Palm-Print-Identification-System-V2:/app \
+  -v /path/to/dataset:/dataset \
+  -w /app vkev25811/cuda12.4-cudnn9-devel:latest
 ```
-Replace /path/to/Palm-Print-Identification-System-V2 with the actual path to the cloned repository, and /path/to/dataset with the path where you extracted the dataset.
 
-Run the training script:
-```
-python train.py --train_path /path/to/dataset/TrainAndTest/train --test_path /path/to/dataset/TrainAndTest/test
-```
-Replace /path/to/dataset with the actual path where you extracted the dataset.
+3. Follow the same training commands as in Local Environment.
 
-The checkpoints will be saved in the checkpoints/ directory within feature_extraction/.
+## Model Conversion
 
-To resume training from a checkpoint:
+### Converting Feature Extraction Model (.pth → .pt)
 
+1. Navigate to helper directory:
 ```bash
-python train.py --train_path /path/to/dataset/TrainAndTest/train --test_path /path/to/dataset/TrainAndTest/test --checkpoint_path checkpoints/your_checkpoint_want_to_resume.pth
+cd feature_extraction
 ```
 
-To test the model:
+2. Update checkpoint path in `torchscript.py`
 
-```bash
-python test.py --validate_path /path/to/dataset/TrainAndTest/test --checkpoint_path checkpoints/your_checkpoint_want_to_test.pth
-```
-
-## Convert checkpoint .pth → .pt for Demo
-
-Navigate to the TorchScript helper:
-
-```bash
-cd Palm-Print-Identification-System-V2/feature_extraction
-```
-
-Open torchscript.py and update checkpoint_path to your desired .pth, then run the converter:
-
+3. Convert model:
 ```bash
 python torchscript.py
 ```
-This will create model_repository/1/model.pt automatically.
 
-Start (or restart) the demo services:
-```bash
-docker-compose up -d
-```
-If Docker services were already running, clean them up first before start services:
+### Restart Services
+
+Clean up existing services:
 ```bash
 docker-compose down
 ```
 
+Start fresh:
+```bash
+docker-compose up -d
+```
