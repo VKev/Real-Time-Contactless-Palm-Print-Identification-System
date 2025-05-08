@@ -1,4 +1,8 @@
-# Palm-Print Identification System V2
+# Real-Time Palm-Print Identification System
+
+![Palm Print Identification Demo](images/demo.gif)
+
+Experience real-time palm print identification with our advanced system.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)

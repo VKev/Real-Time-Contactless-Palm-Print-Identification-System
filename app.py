@@ -412,19 +412,54 @@ def call_set_depth_threshold(threshold):
     return response.json()
 
 def get_latest_log_for_ui():
-    if hasattr(app, 'state') and hasattr(app.state, 'latest_log'):
-        return app.state.latest_log
-    return "Log state unavailable"
+    if not hasattr(app, 'state') or not hasattr(app.state, 'latest_log'):
+        return '''
+            <div style="background-color: #f0f0f0; color: #666; padding: 15px; font-size: 16px; border-radius: 8px; transition: all 0.3s ease;">
+                Log state unavailable
+            </div>
+        '''
+    
+    log = app.state.latest_log
+    style = "padding: 15px; font-size: 16px; border-radius: 8px; font-weight: 500; transition: all 0.3s ease;"
+    
+    # Check if it's a verification result
+    if "VERIFY @" in log:
+        if "Unregistered" in log or "No matches" in log:
+            style += "background-color: #ffebee; color: #c62828;"  # Red for unmatched
+        else:
+            style += "background-color: #e8f5e9; color: #2e7d32;"  # Green for matched
+    elif "REGISTER @" in log:
+        style += "background-color: #e3f2fd; color: #1565c0;"  # Blue for registration
+    else:
+        style += "background-color: #f5f5f5; color: #424242;"  # Gray for other messages
+    
+    return f'''
+        <div style="{style}">
+            {log}
+        </div>
+    '''
 
-with gr.Blocks(title="Palm‑Print Identification System") as ui:
+with gr.Blocks(title="Palm‑Print Identification System", css="""
+    .log-container {
+        transition: all 0.3s ease;
+    }
+    .log-container div {
+        transition: all 0.3s ease;
+    }
+""") as ui:
     gr.Markdown("# ✋ Palm‑Print Identification System")
     with gr.Row():
         with gr.Column(scale=1):
             cam_dd = gr.Dropdown(choices=[str(i) for i in range(2)], value='0', label="Select Camera Index")
             status = gr.Textbox(label="Camera Status", interactive=False, lines=1)
-            logs = gr.Textbox(label="Latest Event", interactive=False, lines=1, max_lines=1)
+            logs = gr.HTML(
+                label="Latest Event",
+                value='<div style="background-color: #f0f0f0; color: #666; padding: 15px; font-size: 16px; border-radius: 8px; transition: all 0.3s ease;">No logs yet.</div>',
+                show_label=True,
+                elem_classes=["log-container"]
+            )
 
-            log_timer = gr.Timer(0.2)
+            log_timer = gr.Timer(0.5)  # Increased refresh interval slightly
             log_timer.tick(
                 fn=get_latest_log_for_ui,
                 inputs=None,
