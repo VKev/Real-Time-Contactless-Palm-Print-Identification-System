@@ -14,32 +14,17 @@ except ImportError:
     
 
 def apply_depth_mask(image: np.ndarray, depth_map: np.ndarray, threshold: float = 0.5) -> Image.Image:
-    """
-    Applies a depth-based mask to the input image. Pixels with depth values below the threshold are blacked out.
-
-    Parameters:
-        image (np.ndarray): The original RGB image as a NumPy array.
-        depth_map (np.ndarray): The corresponding depth map as a NumPy array with values in [0, 255].
-        threshold (float): Threshold value between 0 and 1 to determine which pixels to keep.
-
-    Returns:
-        PIL.Image.Image: The masked image.
-    """
-    # Ensure depth_map is in the range [0, 255]
     if depth_map.max() <= 1.0:
         depth_map = (depth_map * 255).astype(np.uint8)
     else:
         depth_map = depth_map.astype(np.uint8)
 
-    # Create a binary mask where depth >= threshold
     threshold_value = int(threshold * 255)
     mask = depth_map >= threshold_value
 
-    # Apply the mask to the image
     masked_image = np.zeros_like(image)
     masked_image[mask] = image[mask]
 
-    # Convert the result to a PIL Image
     return Image.fromarray(masked_image)
 
 

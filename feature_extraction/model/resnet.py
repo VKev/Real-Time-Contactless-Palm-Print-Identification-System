@@ -14,7 +14,6 @@ class ResidualBlock(nn.Module):
         
         self.cbam = CBAMBlock(out_channels, 16, 3) if use_cbam else nn.Identity()
         
-        # Create a shortcut for cases when input and output dimensions differ.
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
@@ -56,19 +55,6 @@ class BranchResNet(nn.Module):
                  use_cbam=True,
                  local_out_channels=None,
                  pooled_out_channels=None):
-        """
-        Args:
-            in_channels (int): Number of input channels.
-            conv_channels (int): Number of channels for the initial convolution.
-            block_channels (list): List of output channels for each residual block.
-            strides (list): List of strides for each residual block.
-            pooling_size (tuple): Target spatial size for adaptive average pooling.
-            use_cbam (bool): Whether to use CBAM in the residual blocks.
-            local_out_channels (int, optional): If provided, projects the output from the first residual block 
-                                                (local feature) to this channel size.
-            pooled_out_channels (int, optional): If provided, projects the output from the last residual block 
-                                                 (pooled feature) to this channel size.
-        """
         super(BranchResNet, self).__init__()
         self.convblock1 = nn.Sequential(
             nn.Conv2d(in_channels, block_channels[0], kernel_size=3, stride=2, padding=2, bias=False),
@@ -76,7 +62,6 @@ class BranchResNet(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        # Create the residual blocks sequentially.
         self.resblocks = nn.ModuleList()
         current_channels = block_channels[0]
         for out_channels, stride in zip(block_channels, strides):
@@ -85,7 +70,6 @@ class BranchResNet(nn.Module):
         
         self.adptAvgPool2d = nn.AdaptiveAvgPool2d(pooling_size)
         
-        # Optional projection layers for channel conversion.
         if local_out_channels is not None:
             self.local_proj = nn.Sequential(
                 nn.Conv2d(block_channels[0], local_out_channels, kernel_size=1, bias=False),
@@ -119,28 +103,22 @@ class BranchResNet(nn.Module):
         
     def forward(self, x):
         x = self.convblock1(x)
-        # Process through the first residual block and save its pooled output.
         x = self.resblocks[0](x)
         local_feature = self.adptAvgPool2d(x)
         
-        # Optionally project the local feature channels.
         if self.local_proj is not None:
             local_feature = self.local_proj(local_feature)
         
-        # Continue through the remaining residual blocks.
         x = self.resblocks[1](x)
-        x_raw = self.resblocks[2](x)  # Raw feature from the last residual block.
+        x_raw = self.resblocks[2](x)
         pooled_feature = self.adptAvgPool2d(x_raw)
         
-        # Optionally project the pooled feature channels.
         if self.pooled_proj is not None:
             pooled_feature = self.pooled_proj(pooled_feature)
         
-        # Reshape pooled outputs to (batch, channels, -1)
         local_feature = local_feature.reshape(local_feature.size(0), local_feature.size(1), -1)
         pooled_feature = pooled_feature.reshape(pooled_feature.size(0), pooled_feature.size(1), -1)
         
-        # Return the local feature, the pooled feature, and the raw feature from the last block.
         return local_feature, pooled_feature, x_raw
 
 if __name__ == "__main__":

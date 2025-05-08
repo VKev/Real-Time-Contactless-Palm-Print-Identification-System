@@ -15,7 +15,6 @@ import torch.nn.init as init
 
 
 class PatchEmbed(nn.Module):
-    """2D Image to Patch Embedding"""
 
     def __init__(
         self,
