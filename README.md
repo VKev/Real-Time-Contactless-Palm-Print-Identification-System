@@ -1,6 +1,6 @@
 # Real-Time Palm-Print Identification System
 
-![Palm Print Identification Demo](images/demo.gif)
+https://github.com/user-attachments/assets/a50e894c-6ea9-4e71-bc9a-5ac9169726af
 
 Experience real-time palm print identification with our advanced system.
 
