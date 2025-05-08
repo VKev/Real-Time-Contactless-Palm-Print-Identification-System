@@ -166,14 +166,9 @@ docker run -it --shm-size=8g --gpus all --name palm_print_container \
 
 ### Converting Feature Extraction Model (.pth → .pt)
 
-1. Navigate to helper directory:
-```bash
-cd feature_extraction
-```
+1. Update checkpoint path in `torchscript.py`
 
-2. Update checkpoint path in `torchscript.py`
-
-3. Convert model:
+2. Convert model:
 ```bash
 python torchscript.py
 ```
