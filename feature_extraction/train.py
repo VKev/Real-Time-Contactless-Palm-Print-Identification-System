@@ -273,7 +273,10 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
         
         top1_accuracy, _ = compute_top1(embeddings, image_paths)
     
-    return avg_loss, top1_accuracy if is_test else avg_loss
+    if not is_test:
+        return avg_loss, None          # always a tuple
+    else:
+        return avg_loss, top1_accuracy
 
 def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, scheduler: object, 
                    epoch: int, loss: float, checkpoint_dir: str = "checkpoints"):
@@ -329,7 +332,7 @@ if __name__ == "__main__":
             
             # Evaluate
             torch.cuda.empty_cache()
-            val_loss = evaluate(model, val_loader, args.device, triplet_loss,is_test=False)
+            val_loss, _ = evaluate(model, val_loader, args.device, triplet_loss,is_test=False)
             torch.cuda.empty_cache()
             test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss, 
                                           is_test=True, test_path=args.test_path)
