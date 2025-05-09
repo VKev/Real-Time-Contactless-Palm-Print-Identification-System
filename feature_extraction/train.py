@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
-from torchvision import datasets, transforms
+from torchvision import datasets, transforms, models
 try:
     from model import MyModel
     from util import TripletDataset, CombinedDataset, triplet_collate_fn
@@ -22,8 +22,34 @@ except ImportError:
     from feature_extraction.util import transform, augmentation
     from feature_extraction.util import load_images
 
+def get_model(model_name: str, device: str) -> nn.Module:
+    """Initialize the selected model architecture."""
+    if model_name == "mymodel":
+        return MyModel().to(device)
+    elif model_name == "resnet50":
+        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        model.fc = nn.Linear(model.fc.in_features, 128)  # Match MyModel output dim
+        return model.to(device)
+    elif model_name == "resnet101":
+        model = models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+        model.fc = nn.Linear(model.fc.in_features, 128)
+        return model.to(device)
+    elif model_name == "vgg16":
+        model = models.vgg16(weights=models.VGG16_Weights.DEFAULT)
+        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, 128)
+        return model.to(device)
+    elif model_name == "vits":
+        model = models.vit_s_16(weights=models.ViT_S_16_Weights.DEFAULT)
+        model.heads.head = nn.Linear(model.heads.head.in_features, 128)
+        return model.to(device)
+    else:
+        raise ValueError(f"Unsupported model architecture: {model_name}")
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Training parameters for the model.')
+    parser.add_argument('--model', type=str, default='mymodel',
+                      choices=['mymodel', 'resnet50', 'resnet101', 'vgg16', 'vits'],
+                      help='Model architecture to use')
     parser.add_argument('--checkpoint_path', type=str, default="", help='Path to checkpoint file for continuing training')
     parser.add_argument('--train_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/train", help='Path to the training images folder')
     parser.add_argument('--test_path', type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test", help='Path to the testing images folder')
@@ -47,7 +73,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
         return args.learning_rate
     if not args.checkpoint_path:
         start_epoch = 0
-        model = MyModel().to(args.device)
+        model = get_model(args.model, args.device)
         for param in model.parameters():
             param.requires_grad = True
         optimizer = optim.AdamW(
@@ -63,7 +89,7 @@ def initialize_model(args: argparse.Namespace) -> Tuple[torch.nn.Module, optim.O
     else:
         checkpoint = torch.load(args.checkpoint_path)
 
-        model = MyModel().to(args.device)
+        model = get_model(args.model, args.device)
         model.load_state_dict(checkpoint['model_state_dict'])
         
         start_epoch = checkpoint['epoch']
@@ -229,7 +255,7 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
     return total_loss / total_batches if total_batches > 0 else total_loss
 
 def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, scheduler: object, 
-                   epoch: int, loss: float, checkpoint_dir: str = "checkpoints"):
+                   epoch: int, loss: float, model_name: str, checkpoint_dir: str = "checkpoints"):
     """Save model checkpoint and training state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
@@ -239,7 +265,7 @@ def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, schedule
         'scheduler_state_dict': scheduler.state_dict(),
         'loss': loss
     }
-    checkpoint_path = f"{checkpoint_dir}/checkpoint_epoch_{epoch}.pth"
+    checkpoint_path = f"{checkpoint_dir}/{model_name}_epoch_{epoch}.pth"
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
@@ -275,7 +301,7 @@ if __name__ == "__main__":
             )
             
             # Save checkpoint
-            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss)
+            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss, args.model)
             
             # Evaluate
             torch.cuda.empty_cache()
@@ -310,8 +336,8 @@ if __name__ == "__main__":
     finally:
         # Save final checkpoint
         try:
-            final_checkpoint_path = os.path.join("checkpoints", "final_model.pth")
-            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss)
+            final_checkpoint_path = os.path.join("checkpoints", f"{args.model}_final_model.pth")
+            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss, args.model)
             print(f"Final checkpoint saved at {final_checkpoint_path}")
         except Exception as e:
             print(f"Error saving final checkpoint: {str(e)}")

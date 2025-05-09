@@ -100,7 +100,6 @@ class MyModel(nn.Module):
             nn.Linear(256 * 269, 128),
         )
         
-        
         self.initialize_weights()
 
     def initialize_weights(self):
