@@ -10,21 +10,20 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms, models
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from pathlib import Path
-
 try:
     from model import MyModel
     from util import TripletDataset, CombinedDataset, triplet_collate_fn
     from util import BatchAllTripletLoss
     from util import transform, augmentation
-    from util import load_images
+    from util import load_images, get_image_paths
+    from test import compute_top1
 except ImportError:
     from feature_extraction.model import MyModel
     from feature_extraction.util import TripletDataset, CombinedDataset, triplet_collate_fn
     from feature_extraction.util import BatchAllTripletLoss
     from feature_extraction.util import transform, augmentation
-    from feature_extraction.util import load_images
+    from feature_extraction.util import load_images, get_image_paths
+    from feature_extraction.test import compute_top1
 
 def get_model(model_name: str, device: str) -> nn.Module:
     """Initialize the selected model architecture."""
@@ -231,26 +230,18 @@ def train_epoch(model: torch.nn.Module, train_loader: DataLoader, optimizer: opt
     return running_loss / total_batches if total_batches > 0 else running_loss
 
 def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.device, 
-            triplet_loss: object) -> Tuple[float, float]:
+            triplet_loss: object, is_test: bool = False, test_path: str = None) -> float:
     model.eval()
     total_loss = 0.0
     total_batches = 0
+    
+    # For top-1 accuracy calculation
     all_embeddings = []
-    all_paths = []
-
+    
     with torch.no_grad():
         for all_images, num_anchors, num_negatives_per_anchor in tqdm(data_loader, desc="Evaluating"):
             all_images = all_images.to(device)
             all_features = model.forward(all_images)
-
-            # Store only anchor embeddings and paths for top-1 calculation
-            anchor_features = all_features[:num_anchors]
-            all_embeddings.append(anchor_features.cpu().numpy())
-            
-            # Get paths from the dataset (only for anchors)
-            batch_start = total_batches * data_loader.batch_size
-            anchor_paths = data_loader.dataset.dataset.image_paths[batch_start:batch_start + num_anchors]
-            all_paths.extend(anchor_paths)
 
             anchors_features = all_features[:num_anchors]
             positives_features = all_features[num_anchors:2*num_anchors]
@@ -266,19 +257,33 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
             if loss.item() > 0:
                 total_loss += loss.item()
             total_batches += 1
-
-    # Calculate top-1 accuracy using only anchor embeddings
-    embeddings = np.vstack(all_embeddings)
-    labels = np.array([str(Path(p).stem.split("_")[-1]) for p in all_paths])
-    knn = NearestNeighbors(n_neighbors=2, metric="euclidean").fit(embeddings)
-    _, idx = knn.kneighbors(embeddings)
-    top1_accuracy = float((labels == labels[idx[:, 1]]).mean())
-
+            
+            # Store embeddings for top-1 accuracy (only anchors for simplicity)
+            if is_test:
+                all_embeddings.append(anchors_features.cpu().numpy())
+    
     avg_loss = total_loss / total_batches if total_batches > 0 else total_loss
-    return avg_loss, top1_accuracy
+    
+    # Calculate top-1 accuracy if this is test data
+    top1_accuracy = 0.0
+    if is_test and test_path:
+        # Get image paths for test data
+        image_paths = get_image_paths(test_path)
+        
+        # Combine all embeddings
+        embeddings = np.vstack(all_embeddings)
+        
+        # Calculate top-1 accuracy
+        top1_accuracy, _ = compute_top1(embeddings, image_paths)
+        
+        # Log to wandb if available
+        if 'wandb' in globals():
+            wandb.log({"test_top1_accuracy": top1_accuracy})
+    
+    return avg_loss, top1_accuracy if is_test else avg_loss
 
 def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, scheduler: object, 
-                   epoch: int, loss: float, model_name: str, checkpoint_dir: str = "checkpoints"):
+                   epoch: int, loss: float, checkpoint_dir: str = "checkpoints"):
     """Save model checkpoint and training state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
@@ -288,7 +293,7 @@ def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, schedule
         'scheduler_state_dict': scheduler.state_dict(),
         'loss': loss
     }
-    checkpoint_path = f"{checkpoint_dir}/{model_name}_epoch_{epoch}.pth"
+    checkpoint_path = f"{checkpoint_dir}/checkpoint_epoch_{epoch}.pth"
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
@@ -313,9 +318,12 @@ if __name__ == "__main__":
         with open("checkpoints/loss.txt", "a") as f:
             f.write(f"\n")
             
-        test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss)
+        test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss, 
+                                      is_test=True, test_path=args.test_path)
         torch.cuda.empty_cache()
         print("test loss: ", test_loss)
+        print("test top-1 accuracy: ", test_acc)
+        
         for epoch in range(start_epoch, args.epochs):
             # Train
             train_loss = train_epoch(
@@ -324,33 +332,35 @@ if __name__ == "__main__":
             )
             
             # Save checkpoint
-            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss, args.model)
+            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss)
             
             # Evaluate
             torch.cuda.empty_cache()
-            val_loss, val_acc = evaluate(model, val_loader, args.device, triplet_loss)
+            val_loss = evaluate(model, val_loader, args.device, triplet_loss)
             torch.cuda.empty_cache()
-            test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss)
+            test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss, 
+                                          is_test=True, test_path=args.test_path)
             
             # Log results
             with open("checkpoints/loss.txt", "a") as f:
                 f.write(f"Epoch [{epoch+1}/{args.epochs}]: ")
                 f.write(f"Training Loss: {train_loss:.6f}, ")
-                f.write(f"Validation Loss: {val_loss:.6f} (Acc: {val_acc:.4f}), ")
-                f.write(f"Test Loss: {test_loss:.6f} (Acc: {test_acc:.4f})\n")
+                f.write(f"Validation Loss: {val_loss:.6f}, ")
+                f.write(f"Test Loss: {test_loss:.6f}, ")
+                f.write(f"Test Top-1 Accuracy: {test_acc:.6f}\n")
                 
             wandb.log({
                 "training_loss": train_loss,
                 "val_loss": val_loss,
-                "val_accuracy": val_acc,
                 "test_loss": test_loss,
-                "test_accuracy": test_acc,
+                "test_top1_accuracy": test_acc
             })
             
             print(f"Epoch [{epoch+1}/{args.epochs}]: "
                   f"Training Loss: {train_loss:.6f}, "
-                  f"Validation Loss: {val_loss:.6f} (Acc: {val_acc:.4f}), "
-                  f"Test Loss: {test_loss:.6f} (Acc: {test_acc:.4f})")
+                  f"Validation Loss: {val_loss:.6f}, "
+                  f"Test Loss: {test_loss:.6f}, "
+                  f"Test Top-1 Accuracy: {test_acc:.6f}")
             torch.cuda.empty_cache()
             
     except KeyboardInterrupt:
@@ -361,8 +371,8 @@ if __name__ == "__main__":
     finally:
         # Save final checkpoint
         try:
-            final_checkpoint_path = os.path.join("checkpoints", f"{args.model}_final_model.pth")
-            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss, args.model)
+            final_checkpoint_path = os.path.join("checkpoints", "final_model.pth")
+            save_checkpoint(model, optimizer, scheduler, epoch+1, train_loss)
             print(f"Final checkpoint saved at {final_checkpoint_path}")
         except Exception as e:
             print(f"Error saving final checkpoint: {str(e)}")
