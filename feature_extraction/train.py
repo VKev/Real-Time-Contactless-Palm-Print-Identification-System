@@ -329,7 +329,7 @@ if __name__ == "__main__":
             
             # Evaluate
             torch.cuda.empty_cache()
-            val_loss = evaluate(model, val_loader, args.device, triplet_loss)
+            val_loss = evaluate(model, val_loader, args.device, triplet_loss,is_test=False)
             torch.cuda.empty_cache()
             test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss, 
                                           is_test=True, test_path=args.test_path)
