@@ -267,18 +267,11 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
     # Calculate top-1 accuracy if this is test data
     top1_accuracy = 0.0
     if is_test and test_path:
-        # Get image paths for test data
         image_paths = get_image_paths(test_path)
         
-        # Combine all embeddings
         embeddings = np.vstack(all_embeddings)
         
-        # Calculate top-1 accuracy
         top1_accuracy, _ = compute_top1(embeddings, image_paths)
-        
-        # Log to wandb if available
-        if 'wandb' in globals():
-            wandb.log({"test_top1_accuracy": top1_accuracy})
     
     return avg_loss, top1_accuracy if is_test else avg_loss
 
