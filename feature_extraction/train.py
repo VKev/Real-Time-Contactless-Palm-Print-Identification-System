@@ -9,6 +9,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms, models
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+from pathlib import Path
+
 try:
     from model import MyModel
     from util import TripletDataset, CombinedDataset, triplet_collate_fn
@@ -227,15 +231,26 @@ def train_epoch(model: torch.nn.Module, train_loader: DataLoader, optimizer: opt
     return running_loss / total_batches if total_batches > 0 else running_loss
 
 def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.device, 
-            triplet_loss: object) -> float:
+            triplet_loss: object) -> Tuple[float, float]:
     model.eval()
     total_loss = 0.0
     total_batches = 0
+    all_embeddings = []
+    all_paths = []
 
     with torch.no_grad():
         for all_images, num_anchors, num_negatives_per_anchor in tqdm(data_loader, desc="Evaluating"):
             all_images = all_images.to(device)
             all_features = model.forward(all_images)
+
+            # Store only anchor embeddings and paths for top-1 calculation
+            anchor_features = all_features[:num_anchors]
+            all_embeddings.append(anchor_features.cpu().numpy())
+            
+            # Get paths from the dataset (only for anchors)
+            batch_start = total_batches * data_loader.batch_size
+            anchor_paths = data_loader.dataset.dataset.image_paths[batch_start:batch_start + num_anchors]
+            all_paths.extend(anchor_paths)
 
             anchors_features = all_features[:num_anchors]
             positives_features = all_features[num_anchors:2*num_anchors]
@@ -252,7 +267,15 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
                 total_loss += loss.item()
             total_batches += 1
 
-    return total_loss / total_batches if total_batches > 0 else total_loss
+    # Calculate top-1 accuracy using only anchor embeddings
+    embeddings = np.vstack(all_embeddings)
+    labels = np.array([str(Path(p).stem.split("_")[-1]) for p in all_paths])
+    knn = NearestNeighbors(n_neighbors=2, metric="euclidean").fit(embeddings)
+    _, idx = knn.kneighbors(embeddings)
+    top1_accuracy = float((labels == labels[idx[:, 1]]).mean())
+
+    avg_loss = total_loss / total_batches if total_batches > 0 else total_loss
+    return avg_loss, top1_accuracy
 
 def save_checkpoint(model: torch.nn.Module, optimizer: optim.Optimizer, scheduler: object, 
                    epoch: int, loss: float, model_name: str, checkpoint_dir: str = "checkpoints"):
@@ -290,7 +313,7 @@ if __name__ == "__main__":
         with open("checkpoints/loss.txt", "a") as f:
             f.write(f"\n")
             
-        test_loss = evaluate(model, test_loader, args.device, triplet_loss)
+        test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss)
         torch.cuda.empty_cache()
         print("test loss: ", test_loss)
         for epoch in range(start_epoch, args.epochs):
@@ -305,27 +328,29 @@ if __name__ == "__main__":
             
             # Evaluate
             torch.cuda.empty_cache()
-            val_loss = evaluate(model, val_loader, args.device, triplet_loss)
+            val_loss, val_acc = evaluate(model, val_loader, args.device, triplet_loss)
             torch.cuda.empty_cache()
-            test_loss = evaluate(model, test_loader, args.device, triplet_loss)
+            test_loss, test_acc = evaluate(model, test_loader, args.device, triplet_loss)
             
             # Log results
             with open("checkpoints/loss.txt", "a") as f:
                 f.write(f"Epoch [{epoch+1}/{args.epochs}]: ")
                 f.write(f"Training Loss: {train_loss:.6f}, ")
-                f.write(f"Validation Loss: {val_loss:.6f}, ")
-                f.write(f"Test Loss: {test_loss:.6f}\n")
+                f.write(f"Validation Loss: {val_loss:.6f} (Acc: {val_acc:.4f}), ")
+                f.write(f"Test Loss: {test_loss:.6f} (Acc: {test_acc:.4f})\n")
                 
             wandb.log({
                 "training_loss": train_loss,
                 "val_loss": val_loss,
+                "val_accuracy": val_acc,
                 "test_loss": test_loss,
+                "test_accuracy": test_acc,
             })
             
             print(f"Epoch [{epoch+1}/{args.epochs}]: "
                   f"Training Loss: {train_loss:.6f}, "
-                  f"Validation Loss: {val_loss:.6f}, "
-                  f"Test Loss: {test_loss:.6f}")
+                  f"Validation Loss: {val_loss:.6f} (Acc: {val_acc:.4f}), "
+                  f"Test Loss: {test_loss:.6f} (Acc: {test_acc:.4f})")
             torch.cuda.empty_cache()
             
     except KeyboardInterrupt:

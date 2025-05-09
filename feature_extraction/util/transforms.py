@@ -33,7 +33,7 @@ def augmentation(image):
         ], p=0.6, n=2),
         A.OneOf([
             A.GaussianBlur(blur_limit=(3, 5), p=0.5),
-            A.MotionBlur(blur_limit=4, p=0.5),
+            A.MotionBlur(blur_limit=(3, 5), p=0.5),
         ], p=0.5),
         A.Affine(translate_percent=(0.0625, 0.1), p=0.3),  
         A.Affine(scale=(0.9, 1.1), p=0.3),  
