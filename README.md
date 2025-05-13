@@ -106,7 +106,7 @@ The system utilizes Triton Inference Server to serve two main models:
 - Deployed on Triton Inference Server
 - Located in `model_repository/feature_extraction`
 
-![Feature Extraction Model Architecture](images/feature_extraction.png)
+![Feature Extraction Model Architecture](images/feature-extraction.png)
 
 ### 2. Depth Estimation Model
 - Implements Depth Anything V2 for depth estimation
