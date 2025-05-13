@@ -30,13 +30,14 @@ state_dict = torch.load(os.path.join(ROOT, 'depth_estimation', 'checkpoints', f'
 model.load_state_dict(state_dict)
 model = model.to(DEVICE).eval()
 
-def remove_background(img: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+def remove_background(img: np.ndarray, threshold: float = 0.24) -> np.ndarray:
     # img: BGR np.ndarray
     rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     tensor, (h, w) = image2tensor(rgb_img, input_size=518)
     depth = model.forward(tensor).detach()
     depth = interpolate(depth, h, w)
-    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+    print(depth.min(), depth.max())
+    depth = (depth - 0) / (10 - 0) * 255.0
     depth = depth.astype(np.uint8)
     masked_pil = apply_depth_mask(rgb_img, depth, threshold=threshold)
     masked_np = np.array(masked_pil)
@@ -116,9 +117,26 @@ def process_and_save(img: np.ndarray, out_path: str, with_bg_removal: bool = Fal
         out_path: Path to save the ROI
         with_bg_removal: Whether to remove background before ROI extraction
     """
+    # Create raw folder in the same directory as out_path
+    raw_folder = os.path.join(os.path.dirname(out_path), "raw")
+    os.makedirs(raw_folder, exist_ok=True)
+    
+    # Save original image to raw folder
+    orig_filename = os.path.basename(out_path).replace(".png", "_original.png")
+    orig_path = os.path.join(raw_folder, orig_filename)
+    cv2.imwrite(orig_path, img)
+    
+    # Apply background removal if needed
     if with_bg_removal:
-        img = remove_background(img)
-    roi = extract_palm_roi(img, 100, 600, 1.1)
+        bg_removed = remove_background(img, threshold=0.26)
+        # Save background removed image to raw folder
+        bg_removed_filename = os.path.basename(out_path).replace(".png", "_bg_removed.png")
+        bg_removed_path = os.path.join(raw_folder, bg_removed_filename)
+        cv2.imwrite(bg_removed_path, bg_removed)
+        img = bg_removed
+        
+    # Extract ROI and save
+    roi = extract_palm_roi(img, 200, 600, 1.1)
     if roi is None:
         return False
     _, resized_gray = preprocess(roi)
@@ -138,17 +156,29 @@ def process_folder(class_folder: str, class_id: int, num_aug: int):
             print(f"⚠️  Cannot read {path}; skipping.")
             continue
 
+        # Determine if right or left hand based on filename
+        file_class_id = class_id
+        hand_type = ""
+        # if "R" in fname or "F" in fname:
+        #     file_class_id = class_id * 2  # Right hand gets even ID
+        #     hand_type = "right"
+        # elif "L" in fname:
+        #     file_class_id = class_id * 2 - 1  # Left hand gets odd ID
+        #     hand_type = "left"
+        # else:
+        #     print(f"⚠️  Cannot determine hand type for {fname}; using default class ID.")
+
         # Process original image with and without background removal
-        roi_out = os.path.join(class_folder, f"roi_{idx}_{class_id}.png")
-        roi_nobg_out = os.path.join(class_folder, f"roi_nobg_{idx}_{class_id}.png")
+        roi_out = os.path.join(class_folder, f"roi_{idx}_{file_class_id}.png")
+        roi_nobg_out = os.path.join(class_folder, f"roi_nobg_{idx}_{file_class_id}.png")
         
         if process_and_save(img, roi_out, with_bg_removal=False):
-            print(f"✅ ROI saved (with bg): {roi_out}")
+            print(f"✅ ROI saved ({hand_type} hand with bg): {roi_out}")
         else:
             print(f"ℹ️  No hand in original: {path}")
             
         if process_and_save(img, roi_nobg_out, with_bg_removal=True):
-            print(f"✅ ROI saved (no bg): {roi_nobg_out}")
+            print(f"✅ ROI saved ({hand_type} hand no bg): {roi_nobg_out}")
         else:
             print(f"ℹ️  No hand in original after bg removal: {path}")
 
@@ -158,27 +188,27 @@ def process_folder(class_folder: str, class_id: int, num_aug: int):
             aug = augment_image(img)
             
             # Save augmented image (with background)
-            aug_out = os.path.join(class_folder, f"aug_{idx}_{v}_{class_id}.png")
+            aug_out = os.path.join(class_folder, f"aug_{idx}_{v}_{file_class_id}.png")
             cv2.imwrite(aug_out, aug)
-            print(f"✅ Augmentation saved: {aug_out}")
+            print(f"✅ Augmentation saved ({hand_type} hand): {aug_out}")
             
             # Save background-removed version of augmented image
             aug_nobg = remove_background(aug)
-            aug_nobg_out = os.path.join(class_folder, f"aug_nobg_{idx}_{v}_{class_id}.png")
+            aug_nobg_out = os.path.join(class_folder, f"aug_nobg_{idx}_{v}_{file_class_id}.png")
             cv2.imwrite(aug_nobg_out, aug_nobg)
-            print(f"✅ Augmentation saved (no bg): {aug_nobg_out}")
+            print(f"✅ Augmentation saved ({hand_type} hand no bg): {aug_nobg_out}")
 
             # Extract ROI from augmented image (with background)
-            roi_aug_out = os.path.join(class_folder, f"roi_{idx}_{v}_{class_id}.png")
+            roi_aug_out = os.path.join(class_folder, f"roi_{idx}_{v}_{file_class_id}.png")
             if process_and_save(aug, roi_aug_out, with_bg_removal=False):
-                print(f"✅ ROI saved from augmentation (with bg): {roi_aug_out}")
+                print(f"✅ ROI saved from augmentation ({hand_type} hand with bg): {roi_aug_out}")
             else:
                 print(f"ℹ️  No hand in augmentation #{v}: {path}")
                 
             # Extract ROI from background-removed augmented image
-            roi_aug_nobg_out = os.path.join(class_folder, f"roi_nobg_{idx}_{v}_{class_id}.png")
+            roi_aug_nobg_out = os.path.join(class_folder, f"roi_nobg_{idx}_{v}_{file_class_id}.png")
             if process_and_save(aug, roi_aug_nobg_out, with_bg_removal=True):
-                print(f"✅ ROI saved from augmentation (no bg): {roi_aug_nobg_out}")
+                print(f"✅ ROI saved from augmentation ({hand_type} hand no bg): {roi_aug_nobg_out}")
             else:
                 print(f"ℹ️  No hand in augmentation #{v} after bg removal: {path}")
 
@@ -187,38 +217,59 @@ def organize_outputs(root_dir: str):
     roi_folder = os.path.join(root_dir, 'roi_with_bg')
     roi_nobg_folder = os.path.join(root_dir, 'roi_no_bg')
     aug_folder = os.path.join(root_dir, 'augmentations')
+    raw_folder = os.path.join(root_dir, 'raw')
     
-    for folder in [roi_folder, roi_nobg_folder, aug_folder]:
+    for folder in [roi_folder, roi_nobg_folder, aug_folder, raw_folder]:
         os.makedirs(folder, exist_ok=True)
 
     # Process each class folder
     for entry in os.listdir(root_dir):
         class_path = os.path.join(root_dir, entry)
-        if not os.path.isdir(class_path) or entry in ['roi_with_bg', 'roi_no_bg', 'augmentations']:
+        if not os.path.isdir(class_path) or entry in ['roi_with_bg', 'roi_no_bg', 'augmentations', 'raw']:
             continue
             
         # Process files in class folder
         for fname in os.listdir(class_path):
             src = os.path.join(class_path, fname)
-            if not fname.endswith('.png'):
+            if not os.path.isfile(src):
                 continue
                 
             # Determine destination based on file name
             if fname.startswith('roi_nobg_'):
                 dst = os.path.join(roi_nobg_folder, fname)
+                shutil.move(src, dst)
             elif fname.startswith('roi_'):
                 dst = os.path.join(roi_folder, fname)
+                shutil.move(src, dst)
             elif fname.startswith('aug_'):
                 dst = os.path.join(aug_folder, fname)
-            else:
-                continue
+                shutil.move(src, dst)
                 
-            shutil.move(src, dst)
+        # Check if there's a raw subfolder in this class directory
+        raw_subdir = os.path.join(class_path, 'raw')
+        if os.path.isdir(raw_subdir):
+            # Move all files from class's raw folder to the root raw folder
+            for raw_file in os.listdir(raw_subdir):
+                if not os.path.isfile(os.path.join(raw_subdir, raw_file)):
+                    continue
+                    
+                src = os.path.join(raw_subdir, raw_file)
+                dst = os.path.join(raw_folder, raw_file)
+                # Handle potential duplicates by adding class prefix if needed
+                if os.path.exists(dst):
+                    class_name = os.path.basename(class_path)
+                    dst = os.path.join(raw_folder, f"{class_name}_{raw_file}")
+                
+                shutil.move(src, dst)
+            
+            # Remove the now-empty raw subdirectory
+            shutil.rmtree(raw_subdir, ignore_errors=True)
             
     print(f"Organized outputs:")
     print(f"  • ROI with background → {roi_folder}")
     print(f"  • ROI without background → {roi_nobg_folder}")
     print(f"  • Raw augmentations → {aug_folder}")
+    print(f"  • Original and background-removed images → {raw_folder}")
 
 def main(root_dir: str, num_aug: int):
     entries = sorted(os.listdir(root_dir))
@@ -238,13 +289,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--root_dir",
-        default=r"C:\Vkev\Repos\Mamba-Environment\Dataset\Palm-Print\RealisticSet\Roi",
+        default=r"C:\Vkev\Repos\Mamba-Environment\Dataset\Palm-Print\Sapienza University (SMPD) - Copy",
         help="Root folder with class subfolders."
     )
     parser.add_argument(
         "--num_aug",
         type=int,
-        default=9,
+        default=0,
         help="Number of augmentations per image."
     )
     args = parser.parse_args()

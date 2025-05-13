@@ -16,14 +16,14 @@ try:
     from util import BatchAllTripletLoss
     from util import transform, augmentation
     from util import load_images, get_image_paths
-    from test import compute_top1
+    from test import compute_top1, extract_embeddings
 except ImportError:
     from feature_extraction.model import MyModel
     from feature_extraction.util import TripletDataset, CombinedDataset, triplet_collate_fn
     from feature_extraction.util import BatchAllTripletLoss
     from feature_extraction.util import transform, augmentation
     from feature_extraction.util import load_images, get_image_paths
-    from feature_extraction.test import compute_top1
+    from feature_extraction.test import compute_top1, extract_embeddings
 
 def get_model(model_name: str, device: str) -> nn.Module:
     """Initialize the selected model architecture."""
@@ -235,9 +235,6 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
     total_loss = 0.0
     total_batches = 0
     
-    # For top-1 accuracy calculation
-    all_embeddings = []
-    
     with torch.no_grad():
         for all_images, num_anchors, num_negatives_per_anchor in tqdm(data_loader, desc="Evaluating"):
             all_images = all_images.to(device)
@@ -257,21 +254,26 @@ def evaluate(model: torch.nn.Module, data_loader: DataLoader, device: torch.devi
             if loss.item() > 0:
                 total_loss += loss.item()
             total_batches += 1
-            
-            # Store embeddings for top-1 accuracy (only anchors for simplicity)
-            if is_test:
-                all_embeddings.append(anchors_features.cpu().numpy())
     
     avg_loss = total_loss / total_batches if total_batches > 0 else total_loss
     
     # Calculate top-1 accuracy if this is test data
     top1_accuracy = 0.0
     if is_test and test_path:
+        # Use extract_embeddings from test.py
         image_paths = get_image_paths(test_path)
+        paths = [path for path in image_paths]
         
-        embeddings = np.vstack(all_embeddings)
+        # Extract embeddings using the function from test.py
+        embeddings = extract_embeddings(
+            model, 
+            paths, 
+            batch=data_loader.batch_size, 
+            workers=data_loader.num_workers, 
+            device=device
+        )
         
-        top1_accuracy, _ = compute_top1(embeddings, image_paths)
+        top1_accuracy, _ = compute_top1(embeddings, paths)
     
     if not is_test:
         return avg_loss, None          # always a tuple

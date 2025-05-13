@@ -2,12 +2,13 @@ import argparse
 from pathlib import Path
 import sys
 import random
-
+import torch.nn.functional as F
 import torch
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix, classification_report
 
 import matplotlib.pyplot as plt
 import seaborn as sns  # new
@@ -44,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-c", "--checkpoint", type=Path,
                         default=Path("checkpoints/attempt_6.pth"), help="Model checkpoint")
     parser.add_argument("-d", "--data-dir", type=Path,
-                        default=Path("../../Dataset/Palm-Print/TrainAndTest/test"), help="Image directory")
+                        default=Path("../../Dataset/Palm-Print/RealisticSet/Roi/roi_no_bg"), help="Image directory")
     parser.add_argument("-b", "--batch-size", type=int, default=8)
     parser.add_argument("-j", "--num-workers", type=int, default=4)
     parser.add_argument("--device", choices=["cpu", "cuda"],
@@ -83,7 +84,9 @@ def extract_embeddings(model: torch.nn.Module,
     for imgs in tqdm(loader, desc="Extracting embeddings"):
         imgs = imgs.to(device)
         with torch.no_grad():
-            vecs.append(model(imgs).cpu().numpy())
+            feats = model(imgs)                 # raw output
+            # feats = F.normalize(feats, p=2, dim=1)  # ① same as training
+            vecs.append(feats.cpu().numpy())    # ② store normalised
     return np.vstack(vecs)
 
 def compute_top1(emb: np.ndarray, paths: list[Path] | list[str]):
@@ -331,6 +334,67 @@ def save_tsne_plot(emb: np.ndarray,
     plt.close()
     print(f"[INFO] t-SNE visualisation saved → {out}")
 
+def compute_metrics(emb: np.ndarray, paths: list[Path] | list[str]):
+    """
+    Compute various classification metrics including Top-1 accuracy, F1 score, precision, and recall.
+    
+    Args:
+        emb: The extracted feature embeddings
+        paths: List of paths to the original images
+        
+    Returns:
+        metrics: Dictionary containing various metrics
+        labels: The actual labels
+    """
+    labels = np.array([
+        Path(p).stem.split("_")[-1]
+        if isinstance(p, (str, Path)) else str(p).split("_")[-1]
+        for p in paths
+    ])
+    
+    # Compute nearest neighbors
+    knn = NearestNeighbors(n_neighbors=2, metric="euclidean").fit(emb)
+    _, idx = knn.kneighbors(emb)
+    predictions = labels[idx[:, 1]]
+    
+    # Compute metrics
+    accuracy = float((labels == predictions).mean())
+    f1 = f1_score(labels, predictions, average='weighted')
+    precision = precision_score(labels, predictions, average='weighted')
+    recall = recall_score(labels, predictions, average='weighted')
+    
+    # Compute confusion matrix
+    cm = confusion_matrix(labels, predictions)
+    
+    # Get classification report
+    report = classification_report(labels, predictions, output_dict=True)
+    
+    metrics = {
+        'accuracy': accuracy,
+        'f1_score': f1,
+        'precision': precision,
+        'recall': recall,
+        'confusion_matrix': cm,
+        'classification_report': report
+    }
+    
+    return metrics, labels
+
+def plot_confusion_matrix(cm: np.ndarray, vis_dir: Path):
+    """Plot and save confusion matrix visualization."""
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    
+    out = vis_dir / "confusion_matrix.png"
+    plt.savefig(out, dpi=300)
+    plt.close()
+    print(f"[INFO] Confusion matrix visualization saved → {out}")
+
 def main():
     args = parse_args()
     print(f"[INFO] Loading model from {args.checkpoint} on {args.device}")
@@ -346,14 +410,45 @@ def main():
         args.num_workers,
         args.device
     )
-    acc, lbls = compute_top1(emb, paths)
-    print(f"[RESULT] Top-1 Accuracy: {acc:.4f}")
+    
+    # Compute all metrics
+    metrics, actual_labels = compute_metrics(emb, paths)
+    
+    # Print metrics in a organized way
+    print("\n[RESULTS] Classification Metrics:")
+    print(f"Top-1 Accuracy: {metrics['accuracy']:.4f}")
+    print(f"F1 Score: {metrics['f1_score']:.4f}")
+    print(f"Precision: {metrics['precision']:.4f}")
+    print(f"Recall: {metrics['recall']:.4f}")
+    
+    # Print per-class metrics from classification report
+    print("\n[RESULTS] Per-class Metrics:")
+    report = metrics['classification_report']
+    for class_name, class_metrics in report.items():
+        if class_name in ['accuracy', 'macro avg', 'weighted avg']:
+            continue
+        print(f"\nClass {class_name}:")
+        print(f"  Precision: {class_metrics['precision']:.4f}")
+        print(f"  Recall: {class_metrics['recall']:.4f}")
+        print(f"  F1-score: {class_metrics['f1-score']:.4f}")
+    
+    # Print macro and weighted averages
+    print("\n[RESULTS] Overall Averages:")
+    print("Macro Average:")
+    print(f"  Precision: {report['macro avg']['precision']:.4f}")
+    print(f"  Recall: {report['macro avg']['recall']:.4f}")
+    print(f"  F1-score: {report['macro avg']['f1-score']:.4f}")
+    print("\nWeighted Average:")
+    print(f"  Precision: {report['weighted avg']['precision']:.4f}")
+    print(f"  Recall: {report['weighted avg']['recall']:.4f}")
+    print(f"  F1-score: {report['weighted avg']['f1-score']:.4f}")
 
     print("[INFO] Building UMAP plot …")
-    save_umap_plot(emb, lbls, args.vis_dir, args.vis_classes)
+    save_umap_plot(emb, actual_labels, args.vis_dir, args.vis_classes)
 
     print("[INFO] Building t-SNE plot …")
-    save_tsne_plot(emb, lbls, args.vis_dir, args.vis_classes)
+    save_tsne_plot(emb, actual_labels, args.vis_dir, args.vis_classes)
+    
     
     # Split data for verification experiments
     print("[INFO] Setting up verification experiment...")
@@ -370,7 +465,7 @@ def main():
     # Visualize ROC curve
     print("[INFO] Building ROC curve...")
     save_roc_curve(fpr, tpr, roc_auc, args.vis_dir)
-    print("thresholds: ", thresholds)
+    print(f"[RESULT] ROC AUC Score: {roc_auc:.4f}")
 
 if __name__ == "__main__":
     main()

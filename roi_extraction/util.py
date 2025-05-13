@@ -10,7 +10,7 @@ _hands = _mp.Hands(
     max_num_hands=1,
     model_complexity=1,
     min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
+    min_tracking_confidence=0.5
 )
 
 _PALM_IDS = [
@@ -51,12 +51,12 @@ def _rotate_landmarks(lms, M, w, h):
         out.append(_LM(px / w, py / h, lm.z))
     return out
 
-def _calculate_palm_center(rot_lms, w, h):
+def _calculate_palm_center(rot_lms, w, h, y_shift=0):
     xs = [rot_lms[i].x * w for i in _PALM_IDS]
     ys = [rot_lms[i].y * h for i in _PALM_IDS]
-    return int(np.mean(xs)), int(np.mean(ys))
+    return int(np.mean(xs)), int(np.mean(ys) + y_shift)
 
-def extract_palm_roi(frame_bgr, min_size=100, max_size=600, scale=1.1):
+def extract_palm_roi(frame_bgr, min_size=100, max_size=600, scale=1.1, y_shift=50):
     frame_bgr = cv2.flip(frame_bgr, 1)
     h, w = frame_bgr.shape[:2]
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -73,8 +73,7 @@ def extract_palm_roi(frame_bgr, min_size=100, max_size=600, scale=1.1):
         offset = 120 - 70
     rot_img, M    = _rotate_image(frame_bgr, angle, offset)
     rot_lms       = _rotate_landmarks(lms, M, w, h)
-    cx, cy        = _calculate_palm_center(rot_lms, w, h)
-
+    cx, cy        = _calculate_palm_center(rot_lms, w, h, y_shift)
     roi_sz = int(np.clip(baseline * scale, min_size, max_size))
     half   = roi_sz // 2
     x1, y1 = max(0, cx - half), max(0, cy - half)
