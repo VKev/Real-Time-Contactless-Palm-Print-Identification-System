@@ -5,15 +5,51 @@ https://github.com/user-attachments/assets/a50e894c-6ea9-4e71-bc9a-5ac9169726af
 Experience real-time palm print identification with our advanced system.
 
 ## Table of Contents
+
+- [System Architecture](#system-architecture)
+- [Model Structure](#model-structure)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Running the Demos](#running-the-demos)
   - [Palm Print Identification Demo](#palm-print-identification-demo)
   - [Background Removal Demo](#background-removal-demo)
-- [System Architecture](#system-architecture)
-- [Model Structure](#model-structure)
 - [Training and Testing](#training-and-testing)
 - [Model Conversion](#model-conversion)
+
+## System Architecture
+
+Our palm print identification system employs a sophisticated architecture combining several key components:
+
+![System Architecture](images/system.png)
+
+We used model inference server (Triton) Handles all model and vector database (Qdrant)
+
+## Model Structure
+
+The system utilizes Triton Inference Server to serve two main models:
+
+### 1. Feature Extraction Model
+- Responsible for extracting unique palm print features
+- Used for palm print matching and identification
+- Deployed on Triton Inference Server
+- Located in `model_repository/feature_extraction`
+
+![Feature Extraction Model Architecture](images/feature-extraction.png)
+
+### 2. Depth Estimation Model
+- Implements Depth Anything V2 for depth estimation
+- Enhances palm print analysis with depth information
+- Used for background removal in palm print images
+- Deployed on Triton Inference Server
+- Located in `model_repository/depth_anything_v2`
+- Based on [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2)
+
+Both models are optimized and served through NVIDIA Triton Inference Server, providing:
+- Efficient model management and versioning
+- Optimized inference performance
+- Concurrent model execution
+- Dynamic batching support
+- Model monitoring and metrics
 
 ## Prerequisites
 
@@ -87,41 +123,6 @@ python app.py
 ```
 
 Access the background removal demo at: `http://localhost:8000`
-
-## System Architecture
-
-Our palm print identification system employs a sophisticated architecture combining several key components:
-
-![System Architecture](images/system.png)
-
-We used model inference server (Triton) Handles all model and vector database (Qdrant)
-
-## Model Structure
-
-The system utilizes Triton Inference Server to serve two main models:
-
-### 1. Feature Extraction Model
-- Responsible for extracting unique palm print features
-- Used for palm print matching and identification
-- Deployed on Triton Inference Server
-- Located in `model_repository/feature_extraction`
-
-![Feature Extraction Model Architecture](images/feature-extraction.png)
-
-### 2. Depth Estimation Model
-- Implements Depth Anything V2 for depth estimation
-- Enhances palm print analysis with depth information
-- Used for background removal in palm print images
-- Deployed on Triton Inference Server
-- Located in `model_repository/depth_anything_v2`
-- Based on [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2)
-
-Both models are optimized and served through NVIDIA Triton Inference Server, providing:
-- Efficient model management and versioning
-- Optimized inference performance
-- Concurrent model execution
-- Dynamic batching support
-- Model monitoring and metrics
 
 ## Training and Testing
 
