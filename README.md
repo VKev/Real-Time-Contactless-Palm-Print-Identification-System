@@ -132,7 +132,7 @@ To train the model, you'll need to request access to these datasets:
 - [IITD Palmprint Database](https://www4.comp.polyu.edu.hk/~csajaykr/IITD/Database_Palm.htm)
 - [PolyU 3D Palmprint Database](https://www4.comp.polyu.edu.hk/~csajaykr/myhome/database_request/3dhand/Hand3D.htm)
 
-After approval, email huynhkhang7452@gmail.com with proof of acceptance to receive the formatted training dataset.
+After approval, email khanghv2406@gmail.com with proof of acceptance to receive the formatted training dataset.
 
 ### Test Dataset
 The test dataset is readily available and can be downloaded from:
