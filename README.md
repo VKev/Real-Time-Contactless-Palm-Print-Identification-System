@@ -20,7 +20,7 @@ Experience real-time palm print identification with our advanced system.
 
 Our palm print identification system employs a sophisticated architecture combining several key components:
 
-![System Architecture](images/system.png)
+![Palm_Print_Extraction](https://github.com/user-attachments/assets/c70aada7-6056-4c60-b5de-917f59690f7c)
 
 We used model inference server (Triton) Handles all model and vector database (Qdrant)
 
