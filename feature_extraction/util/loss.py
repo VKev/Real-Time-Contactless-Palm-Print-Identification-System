@@ -22,6 +22,7 @@ class BatchAllTripletLoss(nn.Module):
         if active_mask.any():
             return raw_triplet_loss[active_mask].mean()
 
-        return anchors.new_tensor(0.0)
+        # Keep graph connectivity for zero-loss batches so backward() is always valid.
+        return raw_triplet_loss.sum() * 0.0
 
         

@@ -4,7 +4,7 @@ fightingcv_attention
 gradio
 gradio_imageslider
 matplotlib
-mediapip
+mediapipe
 numpy
 opencv_contrib_python
 opencv_python

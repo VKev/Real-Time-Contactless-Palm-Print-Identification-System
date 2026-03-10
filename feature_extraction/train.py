@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from torchvision import models
 from tqdm import tqdm
 import wandb
-
+# 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
 try:
     from model import MyModel
     from util import TripletDataset, triplet_collate_fn
@@ -65,8 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test_path", type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test",
                         help="Path to the testing images folder.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training and testing.")
-    parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate for the optimizer.")
-    parser.add_argument("--weight_decay", type=float, default=2e-5, help="Weight decay for optimization.")
+    parser.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate for the optimizer.")
+    parser.add_argument("--weight_decay", type=float, default=2e-4, help="Weight decay for optimization.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train the model.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         choices=["cpu", "cuda"], help="Device to use for training.")
@@ -588,6 +588,7 @@ if __name__ == "__main__":
     global_step = int(resume_state.get("global_step", 0)) if resume_state else 0
     best_top1 = float(resume_state.get("best_top1", -1.0)) if resume_state else -1.0
     best_val_loss = float(resume_state.get("best_val_loss", float("inf"))) if resume_state else float("inf")
+    last_completed_epoch = start_epoch
 
     try:
         with open(loss_log_path, "a", encoding="utf-8") as f:
@@ -701,6 +702,8 @@ if __name__ == "__main__":
                     os.path.join(args.checkpoint_dir, "best_model.pth"),
                 )
 
+            last_completed_epoch = epoch + 1
+
     except KeyboardInterrupt:
         print("\n[INFO] Training interrupted by user.")
     except Exception as e:
@@ -713,7 +716,7 @@ if __name__ == "__main__":
                 optimizer=optimizer,
                 scheduler=scheduler,
                 scaler=scaler,
-                epoch=args.epochs,
+                epoch=last_completed_epoch,
                 global_step=global_step,
                 metrics={},
                 best_top1=best_top1,
