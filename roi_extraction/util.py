@@ -29,6 +29,8 @@ _hands_backend = None
 _using_tasks_backend = False
 _video_t0 = None
 _last_video_ts_ms = 0
+_roi_smoother_lock = Lock()
+_roi_smoother = None
 
 _TASK_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
@@ -53,6 +55,153 @@ _ALLOW_LEGACY_SOLUTIONS = _read_env_flag("MP_ALLOW_LEGACY_SOLUTIONS", False)
 _REFRESH_LATEST_MODEL = _read_env_flag("MP_REFRESH_LATEST_MODEL", True)
 _REQUIRE_FULL_MODEL = _read_env_flag("MP_REQUIRE_FULL_MODEL", True)
 _ROTATION_BIAS_DEG = float(os.getenv("ROI_ROTATION_BIAS_DEG", "70"))
+_ROI_SMOOTHING_ENABLED = _read_env_flag("ROI_SMOOTHING_ENABLED", True)
+_ROI_SMOOTH_MIN_CUTOFF = float(os.getenv("ROI_SMOOTH_MIN_CUTOFF", "1.2"))
+_ROI_SMOOTH_BETA = float(os.getenv("ROI_SMOOTH_BETA", "0.08"))
+_ROI_SMOOTH_D_CUTOFF = float(os.getenv("ROI_SMOOTH_D_CUTOFF", "1.0"))
+_ROI_SMOOTH_RESET_SEC = float(os.getenv("ROI_SMOOTH_RESET_SEC", "0.35"))
+
+
+class _LowPassFilter:
+    def __init__(self):
+        self.initialized = False
+        self.value = 0.0
+
+    def reset(self):
+        self.initialized = False
+        self.value = 0.0
+
+    def filter(self, sample, alpha):
+        if not self.initialized:
+            self.value = float(sample)
+            self.initialized = True
+            return self.value
+
+        self.value = (alpha * float(sample)) + ((1.0 - alpha) * self.value)
+        return self.value
+
+
+class _OneEuroFilter:
+    def __init__(self, min_cutoff, beta, d_cutoff):
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.x_filter = _LowPassFilter()
+        self.dx_filter = _LowPassFilter()
+        self.last_ts = None
+
+    def reset(self):
+        self.x_filter.reset()
+        self.dx_filter.reset()
+        self.last_ts = None
+
+    def _alpha(self, cutoff, dt):
+        tau = 1.0 / (2.0 * np.pi * cutoff)
+        return 1.0 / (1.0 + (tau / dt))
+
+    def filter(self, sample, ts):
+        sample = float(sample)
+        if self.last_ts is None:
+            self.last_ts = ts
+            return self.x_filter.filter(sample, 1.0)
+
+        dt = max(ts - self.last_ts, 1e-3)
+        self.last_ts = ts
+
+        prev = self.x_filter.value if self.x_filter.initialized else sample
+        deriv = (sample - prev) / dt
+        deriv_hat = self.dx_filter.filter(deriv, self._alpha(self.d_cutoff, dt))
+        cutoff = self.min_cutoff + (self.beta * abs(deriv_hat))
+        return self.x_filter.filter(sample, self._alpha(cutoff, dt))
+
+
+def _unwrap_angle_deg(angle_deg, reference_deg):
+    if reference_deg is None:
+        return float(angle_deg)
+    delta = (float(angle_deg) - reference_deg + 180.0) % 360.0 - 180.0
+    return reference_deg + delta
+
+
+class _RoiSmoother:
+    def __init__(self):
+        self.angle_filter = _OneEuroFilter(
+            _ROI_SMOOTH_MIN_CUTOFF,
+            _ROI_SMOOTH_BETA,
+            _ROI_SMOOTH_D_CUTOFF,
+        )
+        self.cx_filter = _OneEuroFilter(
+            _ROI_SMOOTH_MIN_CUTOFF,
+            _ROI_SMOOTH_BETA,
+            _ROI_SMOOTH_D_CUTOFF,
+        )
+        self.cy_filter = _OneEuroFilter(
+            _ROI_SMOOTH_MIN_CUTOFF,
+            _ROI_SMOOTH_BETA,
+            _ROI_SMOOTH_D_CUTOFF,
+        )
+        self.size_filter = _OneEuroFilter(
+            _ROI_SMOOTH_MIN_CUTOFF,
+            _ROI_SMOOTH_BETA,
+            _ROI_SMOOTH_D_CUTOFF,
+        )
+        self.last_seen_ts = None
+        self.last_angle = None
+        self.frame_shape = None
+        self.handedness_label = None
+
+    def reset(self):
+        self.angle_filter.reset()
+        self.cx_filter.reset()
+        self.cy_filter.reset()
+        self.size_filter.reset()
+        self.last_seen_ts = None
+        self.last_angle = None
+        self.frame_shape = None
+        self.handedness_label = None
+
+    def _should_reset(self, ts, frame_shape, handedness_label):
+        if self.last_seen_ts is None:
+            return False
+        if ts - self.last_seen_ts > _ROI_SMOOTH_RESET_SEC:
+            return True
+        if self.frame_shape != frame_shape:
+            return True
+        return self.handedness_label != handedness_label
+
+    def _touch(self, ts, frame_shape, handedness_label):
+        if self._should_reset(ts, frame_shape, handedness_label):
+            self.reset()
+        self.last_seen_ts = ts
+        self.frame_shape = frame_shape
+        self.handedness_label = handedness_label
+
+    def smooth_rotation(self, rotation_deg, ts, frame_shape, handedness_label):
+        self._touch(ts, frame_shape, handedness_label)
+        unwrapped = _unwrap_angle_deg(rotation_deg, self.last_angle)
+        smoothed = self.angle_filter.filter(unwrapped, ts)
+        self.last_angle = smoothed
+        return smoothed
+
+    def smooth_roi_box(self, cx, cy, roi_size, ts, frame_shape, handedness_label):
+        self._touch(ts, frame_shape, handedness_label)
+        smoothed_cx = self.cx_filter.filter(cx, ts)
+        smoothed_cy = self.cy_filter.filter(cy, ts)
+        smoothed_size = self.size_filter.filter(roi_size, ts)
+        return smoothed_cx, smoothed_cy, smoothed_size
+
+
+def _get_roi_smoother():
+    global _roi_smoother
+    if _roi_smoother is None:
+        _roi_smoother = _RoiSmoother()
+    return _roi_smoother
+
+
+def _reset_roi_smoother():
+    global _roi_smoother
+    with _roi_smoother_lock:
+        if _roi_smoother is not None:
+            _roi_smoother.reset()
 
 
 def _resolve_task_model_path() -> str:
@@ -274,15 +423,40 @@ def _rotate_landmarks(landmarks, matrix, width, height):
 def _calculate_palm_center(rotated_landmarks, width, height, y_shift):
     xs = [_landmark_xy(rotated_landmarks[i], width, height)[0] for i in PALM_KEYPOINT_IDS]
     ys = [_landmark_xy(rotated_landmarks[i], width, height)[1] for i in PALM_KEYPOINT_IDS]
-    return int(np.mean(xs)), int(np.mean(ys) + y_shift)
+    return float(np.mean(xs)), float(np.mean(ys) + y_shift)
 
 
-def _localize_roi(rotated_img, landmarks, y_shift, min_size, max_size, scale):
+def _localize_roi(
+    rotated_img,
+    landmarks,
+    y_shift,
+    min_size,
+    max_size,
+    scale,
+    handedness_label=None,
+    use_smoothing=True,
+):
     height, width = rotated_img.shape[:2]
     baseline = _calculate_baseline(landmarks, width, height)
     cx, cy = _calculate_palm_center(landmarks, width, height, y_shift)
 
-    roi_size = int(np.clip(baseline * scale, min_size, max_size))
+    roi_size = float(np.clip(baseline * scale, min_size, max_size))
+    if use_smoothing and _ROI_SMOOTHING_ENABLED:
+        now_ts = time.monotonic()
+        with _roi_smoother_lock:
+            smoother = _get_roi_smoother()
+            cx, cy, roi_size = smoother.smooth_roi_box(
+                cx,
+                cy,
+                roi_size,
+                now_ts,
+                (height, width),
+                handedness_label,
+            )
+
+    roi_size = int(np.clip(round(roi_size), min_size, max_size))
+    cx = int(round(cx))
+    cy = int(round(cy))
     half = roi_size // 2
 
     pad = half + 8
@@ -317,14 +491,25 @@ def extract_palm_roi(frame_bgr, min_size=120, max_size=700, scale=1, y_shift=40)
 
     landmarks, handedness_label = _detect_hand_landmarks(rgb)
     if landmarks is None:
+        if _ROI_SMOOTHING_ENABLED:
+            _reset_roi_smoother()
         return None
 
     angle_deg = _calculate_hand_rotation(landmarks, width, height)
-    offset_deg = _get_rotation_offset(handedness_label)
+    applied_rotation_deg = angle_deg + _get_rotation_offset(handedness_label)
+    if _ROI_SMOOTHING_ENABLED:
+        now_ts = time.monotonic()
+        with _roi_smoother_lock:
+            smoother = _get_roi_smoother()
+            applied_rotation_deg = smoother.smooth_rotation(
+                applied_rotation_deg,
+                now_ts,
+                (height, width),
+                handedness_label,
+            )
     rotated_img, rotation_matrix = _rotate_image(
         mirrored,
-        angle_deg,
-        offset_deg=offset_deg,
+        applied_rotation_deg,
     )
     rotated_landmarks = _rotate_landmarks(landmarks, rotation_matrix, width, height)
     roi = _localize_roi(
@@ -334,6 +519,8 @@ def extract_palm_roi(frame_bgr, min_size=120, max_size=700, scale=1, y_shift=40)
         min_size,
         max_size,
         scale,
+        handedness_label=handedness_label,
+        use_smoothing=_ROI_SMOOTHING_ENABLED,
     )
     if roi is None:
         return None
