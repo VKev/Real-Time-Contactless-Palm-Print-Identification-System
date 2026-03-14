@@ -9,7 +9,7 @@ services:
       - "8001:8001"   # gRPC
       - "8002:8002"   # Metrics & health
     volumes:
-      - "C:/Vkev/Repos/Mamba-Environment/Palm-Print-Identification-System-V2/model_repository:/models:ro"
+      - "C:/Vkev/Repos/Real-Time-Contactless-Palm-Print-Identification-System/model_repository:/models:ro"
     command: >
       tritonserver
       --model-repository=/models

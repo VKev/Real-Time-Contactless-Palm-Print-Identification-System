@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-c", "--checkpoint", type=Path,
                         default=Path("checkpoints/attempt_6.pth"), help="Model checkpoint")
     parser.add_argument("-d", "--data-dir", type=Path,
-                        default=Path("../../Dataset/Palm-Print/RealisticSet/Roi/roi_no_bg"), help="Image directory")
+                        default=Path("dataset/RealisticSet/Roi/roi_no_bg"), help="Image directory")
     parser.add_argument("-b", "--batch-size", type=int, default=8)
     parser.add_argument("-j", "--num-workers", type=int, default=4)
     parser.add_argument("--device", choices=["cpu", "cuda"],

@@ -60,19 +60,19 @@ def parse_args() -> argparse.Namespace:
                         help="Model architecture to use.")
     parser.add_argument("--checkpoint_path", type=str, default="", help="Path to checkpoint for resuming.")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Directory to save checkpoints.")
-    parser.add_argument("--train_path", type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/train",
+    parser.add_argument("--train_path", type=str, default=r"dataset/TrainAndTest/train",
                         help="Path to the training images folder.")
-    parser.add_argument("--test_path", type=str, default=r"../../Dataset/Palm-Print/TrainAndTest/test",
+    parser.add_argument("--test_path", type=str, default=r"dataset/TrainAndTest/test",
                         help="Path to the testing images folder.")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training and testing.")
-    parser.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate for the optimizer.")
-    parser.add_argument("--weight_decay", type=float, default=2e-4, help="Weight decay for optimization.")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training and testing.")
+    parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate for the optimizer.")
+    parser.add_argument("--weight_decay", type=float, default=2e-5, help="Weight decay for optimization.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train the model.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         choices=["cpu", "cuda"], help="Device to use for training.")
-    parser.add_argument("--wandb", type=str, default="your wandb key", help="W&B API key.")
+    parser.add_argument("--wandb", type=str, default="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", help="W&B API key.")
     parser.add_argument("--wandb_project", type=str, default="My-Model", help="W&B project name.")
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading.")
+    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for data loading.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation split ratio from train data.")
     parser.add_argument("--margin", type=float, default=0.75, help="Triplet margin.")
@@ -130,6 +130,33 @@ def setup_wandb(args: argparse.Namespace) -> None:
 
     wandb.init(project=args.wandb_project, config=vars(args))
 
+def overwrite_optimizer_lr(optimizer: optim.Optimizer, new_lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = new_lr
+        group["initial_lr"] = new_lr
+
+
+def sync_scheduler_lr(
+    scheduler: Optional[optim.lr_scheduler.LRScheduler],
+    optimizer: optim.Optimizer,
+    new_lr: float,
+) -> None:
+    if scheduler is None:
+        return
+
+    # keep optimizer param groups aligned
+    overwrite_optimizer_lr(optimizer, new_lr)
+
+    if hasattr(scheduler, "base_lrs"):
+        scheduler.base_lrs = [new_lr for _ in optimizer.param_groups]
+
+    # OneCycleLR
+    if hasattr(scheduler, "max_lrs"):
+        scheduler.max_lrs = [new_lr for _ in optimizer.param_groups]
+
+    if hasattr(scheduler, "_last_lr"):
+        scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
+
 
 def initialize_model(
     args: argparse.Namespace,
@@ -150,11 +177,17 @@ def initialize_model(
         checkpoint = torch.load(args.checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # IMPORTANT: override checkpoint LR with current CLI LR
+        overwrite_optimizer_lr(optimizer, args.learning_rate)
+
         start_epoch = int(checkpoint.get("epoch", 0))
-        print(f"[INFO] Resumed from checkpoint: {args.checkpoint_path} (epoch={start_epoch})")
+        print(
+            f"[INFO] Resumed from checkpoint: {args.checkpoint_path} "
+            f"(epoch={start_epoch}, overridden_lr={args.learning_rate})"
+        )
 
     return model, optimizer, start_epoch, checkpoint
-
 
 def stratified_split_indices(labels: List[int], val_ratio: float, seed: int) -> Tuple[List[int], List[int]]:
     rng = random.Random(seed)
@@ -269,10 +302,16 @@ def build_scheduler(
     if resume_state and "scheduler_state_dict" in resume_state:
         try:
             scheduler.load_state_dict(resume_state["scheduler_state_dict"])
+            # IMPORTANT: after loading scheduler state, force it to use current CLI LR
+            sync_scheduler_lr(scheduler, optimizer, args.learning_rate)
+            print(f"[INFO] Scheduler state restored and LR synced to {args.learning_rate}")
         except Exception as exc:
             print(f"[WARN] Could not load scheduler state dict: {exc}")
-    return scheduler, step_mode
+            sync_scheduler_lr(scheduler, optimizer, args.learning_rate)
+    else:
+        sync_scheduler_lr(scheduler, optimizer, args.learning_rate)
 
+    return scheduler, step_mode
 
 def unpack_triplet_features(
     all_features: torch.Tensor,
