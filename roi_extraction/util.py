@@ -14,6 +14,16 @@ INDEX_MCP_IDX = 5
 MIDDLE_MCP_IDX = 9
 RING_MCP_IDX = 13
 PINKY_MCP_IDX = 17
+THUMB_IP_IDX = 3
+THUMB_TIP_IDX = 4
+INDEX_PIP_IDX = 6
+INDEX_TIP_IDX = 8
+MIDDLE_PIP_IDX = 10
+MIDDLE_TIP_IDX = 12
+RING_PIP_IDX = 14
+RING_TIP_IDX = 16
+PINKY_PIP_IDX = 18
+PINKY_TIP_IDX = 20
 
 PALM_KEYPOINT_IDS = [
     WRIST_IDX,
@@ -29,6 +39,11 @@ _hands_backend = None
 _using_tasks_backend = False
 _video_t0 = None
 _last_video_ts_ms = 0
+_gesture_backend = None
+_using_gesture_tasks_backend = False
+_gesture_video_t0 = None
+_last_gesture_video_ts_ms = 0
+_gesture_backend_warned = False
 _roi_smoother_lock = Lock()
 _roi_smoother = None
 
@@ -41,6 +56,16 @@ _TASK_MODEL_ENV_VARS = (
     "MP_HAND_LANDMARKER_MODEL",
     "MP_HAND_LANDMARKER_MODEL_PATH",
     "MEDIAPIPE_HAND_LANDMARKER_MODEL",
+)
+_GESTURE_TASK_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task"
+)
+_GESTURE_TASK_MODEL_PATH = Path(__file__).resolve().parent / "models" / "gesture_recognizer.task"
+_GESTURE_TASK_MODEL_ENV_VARS = (
+    "MP_GESTURE_RECOGNIZER_MODEL",
+    "MP_GESTURE_RECOGNIZER_MODEL_PATH",
+    "MEDIAPIPE_GESTURE_RECOGNIZER_MODEL",
 )
 
 
@@ -60,6 +85,13 @@ _ROI_SMOOTH_MIN_CUTOFF = float(os.getenv("ROI_SMOOTH_MIN_CUTOFF", "1.2"))
 _ROI_SMOOTH_BETA = float(os.getenv("ROI_SMOOTH_BETA", "0.08"))
 _ROI_SMOOTH_D_CUTOFF = float(os.getenv("ROI_SMOOTH_D_CUTOFF", "1.0"))
 _ROI_SMOOTH_RESET_SEC = float(os.getenv("ROI_SMOOTH_RESET_SEC", "0.35"))
+_ROI_REQUIRE_PALM_FACING = _read_env_flag("ROI_REQUIRE_PALM_FACING", True)
+_ROI_PALM_FACING_X_TOL = float(os.getenv("ROI_PALM_FACING_X_TOL", "0.0"))
+_ROI_REQUIRE_OPEN_PALM = _read_env_flag("ROI_REQUIRE_OPEN_PALM", True)
+_ROI_OPEN_PALM_MIN_EXTENDED = int(os.getenv("ROI_OPEN_PALM_MIN_EXTENDED", "3"))
+_ROI_OPEN_PALM_MIN_SPREAD = float(os.getenv("ROI_OPEN_PALM_MIN_SPREAD", "0.22"))
+_ROI_OPEN_PALM_DIST_RATIO = float(os.getenv("ROI_OPEN_PALM_DIST_RATIO", "1.08"))
+_ROI_USE_GESTURE_RECOGNIZER = _read_env_flag("ROI_USE_GESTURE_RECOGNIZER", True)
 
 
 class _LowPassFilter:
@@ -244,6 +276,41 @@ def _resolve_task_model_path() -> str:
     return str(_TASK_MODEL_PATH)
 
 
+def _resolve_gesture_task_model_path() -> str:
+    for env_name in _GESTURE_TASK_MODEL_ENV_VARS:
+        configured = os.getenv(env_name)
+        if not configured:
+            continue
+        path = Path(configured).expanduser().resolve()
+        if path.exists():
+            return str(path)
+        raise FileNotFoundError(
+            f"Gesture model path set in {env_name} was not found: {path}"
+        )
+
+    _GESTURE_TASK_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    should_refresh = _REFRESH_LATEST_MODEL or (not _GESTURE_TASK_MODEL_PATH.exists())
+    if should_refresh:
+        tmp_path = _GESTURE_TASK_MODEL_PATH.with_suffix(".task.tmp")
+        try:
+            urllib.request.urlretrieve(_GESTURE_TASK_MODEL_URL, tmp_path)
+            os.replace(tmp_path, _GESTURE_TASK_MODEL_PATH)
+        except Exception as exc:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            if not _GESTURE_TASK_MODEL_PATH.exists():
+                raise RuntimeError(
+                    "Could not download MediaPipe gesture recognizer model. "
+                    f"URL: {_GESTURE_TASK_MODEL_URL}. "
+                    f"Set one of {_GESTURE_TASK_MODEL_ENV_VARS} to a local .task model path."
+                ) from exc
+
+    return str(_GESTURE_TASK_MODEL_PATH)
+
+
 def _init_hands_backend():
     global _hands_backend, _using_tasks_backend, _video_t0, _last_video_ts_ms
 
@@ -265,9 +332,9 @@ def _init_hands_backend():
                 base_options=mp_python.BaseOptions(model_asset_path=model_path),
                 running_mode=vision.RunningMode.VIDEO,
                 num_hands=1,
-                min_hand_detection_confidence=0.5,
-                min_hand_presence_confidence=0.5,
-                min_tracking_confidence=0.5,
+                min_hand_detection_confidence=0.7,
+                min_hand_presence_confidence=0.7,
+                min_tracking_confidence=0.7,
             )
             _hands_backend = vision.HandLandmarker.create_from_options(options)
             _using_tasks_backend = True
@@ -299,6 +366,44 @@ def _init_hands_backend():
         raise RuntimeError(
             "MediaPipe hand backend initialization failed for both Tasks API and legacy solutions API."
         ) from tasks_error
+
+
+def _init_gesture_backend():
+    global _gesture_backend, _using_gesture_tasks_backend
+    global _gesture_video_t0, _last_gesture_video_ts_ms, _gesture_backend_warned
+
+    if not _ROI_USE_GESTURE_RECOGNIZER:
+        return
+    if _gesture_backend is not None:
+        return
+
+    with _backend_lock:
+        if _gesture_backend is not None:
+            return
+
+        try:
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision
+
+            model_path = _resolve_gesture_task_model_path()
+            options = vision.GestureRecognizerOptions(
+                base_options=mp_python.BaseOptions(model_asset_path=model_path),
+                running_mode=vision.RunningMode.VIDEO,
+                num_hands=1,
+            )
+            _gesture_backend = vision.GestureRecognizer.create_from_options(options)
+            _using_gesture_tasks_backend = True
+            _gesture_video_t0 = time.monotonic()
+            _last_gesture_video_ts_ms = 0
+        except Exception as exc:
+            _gesture_backend = None
+            _using_gesture_tasks_backend = False
+            if not _gesture_backend_warned:
+                print(
+                    "[WARN] Gesture recognizer backend unavailable. "
+                    f"Falling back to landmark open-palm heuristic. Detail: {exc}"
+                )
+                _gesture_backend_warned = True
 
 
 def _extract_handedness_label(handedness_result) -> str:
@@ -358,6 +463,50 @@ def _detect_hand_landmarks(rgb_frame):
     return landmarks, label
 
 
+def _is_open_palm_gesture(rgb_frame):
+    global _last_gesture_video_ts_ms
+
+    if not _ROI_USE_GESTURE_RECOGNIZER:
+        return None
+
+    _init_gesture_backend()
+    if _gesture_backend is None or not _using_gesture_tasks_backend:
+        return None
+
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
+    ts_ms = (
+        int((time.monotonic() - _gesture_video_t0) * 1000)
+        if _gesture_video_t0 is not None
+        else 0
+    )
+    if ts_ms <= _last_gesture_video_ts_ms:
+        ts_ms = _last_gesture_video_ts_ms + 1
+    _last_gesture_video_ts_ms = ts_ms
+
+    try:
+        results = _gesture_backend.recognize_for_video(mp_image, ts_ms)
+    except Exception:
+        try:
+            results = _gesture_backend.recognize(mp_image)
+        except Exception:
+            return None
+
+    if not getattr(results, "gestures", None):
+        return False
+    if not results.gestures or not results.gestures[0]:
+        return False
+
+    top = results.gestures[0][0]
+    name = (
+        getattr(top, "category_name", None)
+        or getattr(top, "display_name", None)
+        or getattr(top, "label", None)
+        or ""
+    )
+    return str(name).strip().lower() == "open_palm"
+
+
 def _calculate_baseline(landmarks, width, height):
     idx = landmarks[INDEX_MCP_IDX]
     pky = landmarks[PINKY_MCP_IDX]
@@ -384,6 +533,55 @@ def _calculate_hand_rotation(landmarks, width, height):
     x2, y2 = _landmark_xy(index_mcp, width, height)
 
     return np.degrees(np.arctan2(y2 - y1, x2 - x1))
+
+
+def _is_palm_facing_camera(landmarks, handedness_label) -> bool:
+    """
+    Heuristic in mirrored selfie space:
+    - Right hand palm-facing: index MCP is right of pinky MCP.
+    - Left hand palm-facing:  index MCP is left of pinky MCP.
+    """
+    label = str(handedness_label).strip().lower()
+    if label not in {"left", "right"}:
+        return True
+
+    idx_x, _ = _landmark_xy(landmarks[INDEX_MCP_IDX], 1.0, 1.0)
+    pky_x, _ = _landmark_xy(landmarks[PINKY_MCP_IDX], 1.0, 1.0)
+    tol = _ROI_PALM_FACING_X_TOL
+
+    if label == "right":
+        return (idx_x - pky_x) > tol
+    return (pky_x - idx_x) > tol
+
+
+def _dist_sq(landmarks, a_idx: int, b_idx: int) -> float:
+    ax, ay = _landmark_xy(landmarks[a_idx], 1.0, 1.0)
+    bx, by = _landmark_xy(landmarks[b_idx], 1.0, 1.0)
+    dx = ax - bx
+    dy = ay - by
+    return float(dx * dx + dy * dy)
+
+
+def _is_open_palm_pose(landmarks) -> bool:
+    wrist_idx = WRIST_IDX
+    extended = 0
+
+    finger_triplets = (
+        (INDEX_TIP_IDX, INDEX_PIP_IDX, INDEX_MCP_IDX),
+        (MIDDLE_TIP_IDX, MIDDLE_PIP_IDX, MIDDLE_MCP_IDX),
+        (RING_TIP_IDX, RING_PIP_IDX, RING_MCP_IDX),
+        (PINKY_TIP_IDX, PINKY_PIP_IDX, PINKY_MCP_IDX),
+    )
+    ratio = max(1.01, _ROI_OPEN_PALM_DIST_RATIO)
+    for tip_idx, pip_idx, _mcp_idx in finger_triplets:
+        tip_d = _dist_sq(landmarks, tip_idx, wrist_idx)
+        pip_d = _dist_sq(landmarks, pip_idx, wrist_idx)
+        if tip_d > (pip_d * ratio):
+            extended += 1
+
+    spread = np.sqrt(_dist_sq(landmarks, INDEX_TIP_IDX, PINKY_TIP_IDX))
+    min_extended = max(1, _ROI_OPEN_PALM_MIN_EXTENDED)
+    return extended >= min_extended and spread >= _ROI_OPEN_PALM_MIN_SPREAD
 
 
 def _get_rotation_offset(handedness_label: str) -> float:
@@ -494,6 +692,18 @@ def extract_palm_roi(frame_bgr, min_size=120, max_size=700, scale=1, y_shift=40)
         if _ROI_SMOOTHING_ENABLED:
             _reset_roi_smoother()
         return None
+    if _ROI_REQUIRE_PALM_FACING and not _is_palm_facing_camera(landmarks, handedness_label):
+        if _ROI_SMOOTHING_ENABLED:
+            _reset_roi_smoother()
+        return None
+    if _ROI_REQUIRE_OPEN_PALM:
+        open_palm_ok = _is_open_palm_gesture(rgb)
+        if open_palm_ok is None:
+            open_palm_ok = _is_open_palm_pose(landmarks)
+        if not open_palm_ok:
+            if _ROI_SMOOTHING_ENABLED:
+                _reset_roi_smoother()
+            return None
 
     angle_deg = _calculate_hand_rotation(landmarks, width, height)
     applied_rotation_deg = angle_deg + _get_rotation_offset(handedness_label)
