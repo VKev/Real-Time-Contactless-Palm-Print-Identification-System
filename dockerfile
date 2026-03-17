@@ -1,18 +1,31 @@
-FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
+FROM python:3.12.12-slim
 
-# Install necessary dependencies
-RUN pip install --no-cache-dir tensorboardX causal-conv1d mamba-ssm timm einops transformers opencv-python scipy flask python-dotenv pymongo matplotlib scikit-image scikit-learn wandb elasticsearch seaborn albumentations fightingcv-attention positional-encodings[pytorch,tensorflow] pytorch_lightning mediapipe datasets
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install additional dependencies
-RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 libxcb-xinerama0 qt5-qmake qtbase5-dev qtchooser qtbase5-dev-tools libx11-dev libxkbfile-dev
-
-# Set working directory and copy application code
 WORKDIR /app
 
-#docker run -it --gpus all --name mamba-environment -p 8081:8081 -v C:\Vkev\Repos\Mamba-Environment:/app -w /app mamba-environment
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libgl1 \
+    libgomp1 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
-#docker run -it --gpus all --name cuda12.1-cudnn9-devel -p 8081:8081 -v /home/khanghv:/app -w /app vkev25811/cuda12.1-cudnn9-devel:latest
+COPY requirements.runtime.txt ./requirements.runtime.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install -r requirements.runtime.txt
 
-#docker run -it --gpus all --name mamba-environment -p 8081:8081 -v /var/run/docker.sock:/var/run/docker.sock -v /c/Vkev/Repos/Mamba-Environment:/app -e DOCKER_HOST=unix:///var/run/docker.sock -w /app mamba-environment
+COPY app.py ./app.py
+COPY simple_app.py ./simple_app.py
+COPY roi_extraction ./roi_extraction
+COPY utils ./utils
 
-#docker run --shm-size=6g -p 5000:5000 --gpus all -it --name khanghv -v C:\Vkev\Repos\Mamba-Environment:/app -e DISPLAY=host.docker.internal:0 -v /tmp/.X11-unix:/tmp/.X11-unix vkev25811/cuda12.4-cudnn9-devel
+EXPOSE 7000
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7000"]

@@ -1,43 +1,56 @@
-
 services:
+  app:
+    image: vkev25811/real-time-contactless-palm-print-identification-system-app:latest
+    pull_policy: always
+    container_name: palm-app
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "7000"
+      TRITON_GRPC_URL: "triton:8001"
+      TRITON_MODEL_NAME: "feature_extraction"
+      TRITON_INPUT_NAME: "INPUT__0"
+      TRITON_OUTPUT_NAME: "OUTPUT__0"
+      QDRANT_HOST: "qdrant"
+      QDRANT_PORT: "6333"
+      QDRANT_GRPC_PORT: "6334"
+      QDRANT_COLLECTION: "palm_vectors"
+      CAMERA_UI_WIDTH: "520"
+      VERIFY_PANEL_WIDTH: "520"
+    depends_on:
+      - triton
+      - qdrant
+
   triton:
     image: nvcr.io/nvidia/tritonserver:25.03-py3
-    gpus: "all"
+    gpus:
+      - driver: nvidia
+        count: all
     container_name: triton
     ports:
-      - "8000:8000"   # HTTP/REST
-      - "8001:8001"   # gRPC
-      - "8002:8002"   # Metrics & health
+      - "8000:8000"
+      - "8001:8001"
+      - "8002:8002"
     volumes:
-      - "C:/Vkev/Repos/Real-Time-Contactless-Palm-Print-Identification-System/model_repository:/models:ro"
-    command: >
-      tritonserver
-      --model-repository=/models
+      - ./model_repository:/models:ro
+    command:
+      - tritonserver
+      - --model-repository=/models
     restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:gpu-nvidia-latest
-    restart: always
-    gpus: "all" 
+    gpus:
+      - driver: nvidia
+        count: all
     container_name: qdrant
+    restart: unless-stopped
     environment:
-      - QDRANT__GPU__INDEXING=1
+      QDRANT__GPU__INDEXING: "1"
     ports:
-      - 6333:6333
-      - 6334:6334
-    expose:
-      - 6333
-      - 6334
-      - 6335
-    configs:
-      - source: qdrant_config
-        target: /qdrant/config/production.yaml
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - ./qdrant_data:/qdrant/storage
-
-configs:
-  qdrant_config:
-    content: |
-      log_level: INFO
-
-  

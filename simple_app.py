@@ -1,3 +1,4 @@
+import base64
 import asyncio
 import colorsys
 import io
@@ -13,8 +14,8 @@ import gradio as gr
 import matplotlib
 import numpy as np
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from qdrant_client.models import Distance
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
@@ -34,6 +35,14 @@ ROI_EVERY_N_FRAMES = 1
 ROI_DISPLAY_SIZE = 224
 CAMERA_DISPLAY_WIDTH = 864
 CAMERA_DISPLAY_HEIGHT = 486
+CAMERA_UI_WIDTH = int(os.getenv("CAMERA_UI_WIDTH", "520"))
+CAMERA_UI_HEIGHT = int(os.getenv("CAMERA_UI_HEIGHT", "360"))
+ROI_UI_SIZE = int(os.getenv("ROI_UI_SIZE", "160"))
+PLOT_DISPLAY_WIDTH = int(os.getenv("PLOT_DISPLAY_WIDTH", "240"))
+VERIFY_PANEL_WIDTH = int(os.getenv("VERIFY_PANEL_WIDTH", str(CAMERA_UI_WIDTH)))
+VERIFY_PANEL_HEIGHT = int(os.getenv("VERIFY_PANEL_HEIGHT", "72"))
+BROWSER_UPLOAD_FPS = int(os.getenv("BROWSER_UPLOAD_FPS", "12"))
+CAMERA_STALE_SECONDS = float(os.getenv("CAMERA_STALE_SECONDS", "2.0"))
 PLOT_MAX_POINTS = int(os.getenv("PLOT_MAX_POINTS", "0"))
 PLOT_REFRESH_MS = int(os.getenv("PLOT_REFRESH_MS", "250"))
 PLOT_PADDING_RATIO = float(os.getenv("PLOT_PADDING_RATIO", "0.2"))
@@ -47,6 +56,217 @@ EMBED_VIZ_N_NEIGHBORS = int(os.getenv("EMBED_VIZ_N_NEIGHBORS", "15"))
 EMBED_VIZ_MIN_DIST = float(os.getenv("EMBED_VIZ_MIN_DIST", "0.15"))
 PLOT_METHODS = ("pca", "umap", "tsne")
 _MATPLOTLIB_RENDER_LOCK = threading.Lock()
+
+APP_UI_CSS = """
+.gradio-container {
+  max-width: 1500px !important;
+  margin: 0 auto !important;
+  padding-top: 10px !important;
+}
+.app-title h1 {
+  margin-bottom: 6px !important;
+}
+.control-card,
+.camera-panel,
+.plot-panel {
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+}
+.controls-row {
+  align-items: flex-end !important;
+}
+.main-layout {
+  gap: 16px !important;
+  align-items: stretch !important;
+}
+.camera-wrap {
+  display: flex;
+  justify-content: flex-start;
+  overflow-x: auto;
+}
+.camera-inner {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.camera-frame-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.camera-frame-box {
+  position: relative;
+}
+.roi-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.section-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.plot-top-row,
+.plot-bottom-row {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: flex-start !important;
+}
+.plot-top-row {
+  gap: 16px !important;
+}
+.plot-bottom-row {
+  margin-top: 4px !important;
+}
+.plot-cell {
+  flex: 0 0 auto !important;
+  width: fit-content !important;
+}
+.plot-title {
+  font-weight: 600;
+  text-align: center;
+  margin: 2px 0 8px 0;
+}
+.verify-overlay {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
+"""
+
+APP_UI_HEAD = """
+<style>
+#app-global-init-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2147483647;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+#app-global-init-overlay .card {
+  min-width: 360px;
+  max-width: min(92vw, 760px);
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 18px 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  font-size: 14px;
+  color: #0f172a;
+  font-weight: 600;
+}
+#app-global-init-overlay .spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid #cbd5e1;
+  border-top-color: #1d4ed8;
+  display: inline-block;
+  flex: 0 0 auto;
+  animation: app-global-init-spin 0.9s linear infinite;
+}
+@keyframes app-global-init-spin {
+  to { transform: rotate(360deg); }
+}
+</style>
+<script>
+(() => {
+  const OVERLAY_ID = "app-global-init-overlay";
+  const START_URL = "/plot/init-start";
+  const READY_URL = "/plot/init-ready";
+  const POLL_MS = 350;
+  let timerId = null;
+
+  function ensureOverlay() {
+    if (!document.body || document.getElementById(OVERLAY_ID)) {
+      return;
+    }
+    const el = document.createElement("div");
+    el.id = OVERLAY_ID;
+    el.innerHTML = '<div class="card"><span class="spinner"></span><span>Loading models and embedding plots (PCA/UMAP/t-SNE)...</span></div>';
+    document.body.appendChild(el);
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+  }
+
+  function hideOverlay() {
+    const el = document.getElementById(OVERLAY_ID);
+    if (el) {
+      el.remove();
+    }
+    document.documentElement.style.overflow = "";
+    document.body.style.overflow = "";
+  }
+
+  async function pollReady() {
+    try {
+      const resp = await fetch(`${READY_URL}?t=${Date.now()}`, { cache: "no-store" });
+      if (!resp.ok) {
+        return;
+      }
+      const text = (await resp.text()).trim();
+      if (text === "1") {
+        hideOverlay();
+        if (timerId !== null) {
+          window.clearInterval(timerId);
+          timerId = null;
+        }
+      }
+    } catch (_err) {
+      // Ignore transient network errors and keep polling.
+    }
+  }
+
+  async function markInitStart() {
+    try {
+      await fetch(`${START_URL}?t=${Date.now()}`, {
+        method: "POST",
+        cache: "no-store",
+      });
+    } catch (_err) {
+      // Keep overlay and continue; backend load callback also resets this flag.
+    }
+  }
+
+  async function start() {
+    ensureOverlay();
+    await markInitStart();
+    pollReady();
+    if (timerId === null) {
+      timerId = window.setInterval(pollReady, POLL_MS);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      start();
+    }, { once: true });
+  } else {
+    start();
+  }
+})();
+</script>
+"""
 
 TRITON_GRPC_URL = os.getenv("TRITON_GRPC_URL", "localhost:8001")
 TRITON_MODEL_NAME = os.getenv("TRITON_MODEL_NAME", "feature_extraction")
@@ -67,48 +287,29 @@ except Exception:
     umap = None
 
 
-def _configure_capture(cap: cv2.VideoCapture):
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
-
-
-def _open_camera(idx: int) -> cv2.VideoCapture | None:
-    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(idx)
-    if not cap.isOpened():
-        return None
-    _configure_capture(cap)
-    for _ in range(3):
-        cap.read()
-    return cap
-
-
-def _capture_loop(app: FastAPI):
-    while not app.state.capture_stop.is_set():
-        cap = app.state.cap_map.get(app.state.cam_idx)
-        if cap is None or not cap.isOpened():
-            time.sleep(0.01)
-            continue
-
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            time.sleep(0.005)
-            continue
-
-        with app.state.frame_lock:
-            app.state.latest_frame = frame
-            app.state.latest_frame_id += 1
+def _store_latest_frame(app_instance: FastAPI, frame: np.ndarray):
+    with app_instance.state.frame_lock:
+        app_instance.state.latest_frame = frame
+        app_instance.state.latest_frame_id += 1
+        app_instance.state.latest_frame_ts = time.time()
 
 
 def _get_latest_frame(app: FastAPI):
     with app.state.frame_lock:
         if app.state.latest_frame is None:
             return None, app.state.latest_frame_id
-        return app.state.latest_frame.copy(), app.state.latest_frame_id
+        frame = app.state.latest_frame.copy()
+        frame_id = app.state.latest_frame_id
+        frame_ts = app.state.latest_frame_ts
+    if CAMERA_STALE_SECONDS > 0 and (time.time() - frame_ts) > CAMERA_STALE_SECONDS:
+        return None, frame_id
+    return frame, frame_id
+
+
+def _clear_latest_frame(app_instance: FastAPI):
+    with app_instance.state.frame_lock:
+        app_instance.state.latest_frame = None
+        app_instance.state.latest_frame_ts = 0.0
 
 
 def _placeholder(text: str, width: int = 640, height: int = 480):
@@ -124,33 +325,6 @@ def _placeholder(text: str, width: int = 640, height: int = 480):
         cv2.LINE_AA,
     )
     return img
-
-
-def switch_camera_sync(idx_str: str) -> str:
-    idx = int(idx_str)
-    prev_idx = app.state.cam_idx
-
-    if idx == prev_idx and idx in app.state.cap_map and app.state.cap_map[idx].isOpened():
-        return f"Already using camera {idx}"
-
-    cap_new = _open_camera(idx)
-    if cap_new is None:
-        return f"Camera {idx} could not be opened."
-
-    old_cap = app.state.cap_map.pop(prev_idx, None)
-    app.state.cap_map[idx] = cap_new
-    app.state.cam_idx = idx
-
-    with app.state.frame_lock:
-        app.state.latest_frame = None
-        app.state.latest_frame_id = 0
-    with app.state.register_lock:
-        app.state.register_last_frame_id = -1
-
-    if old_cap is not None and old_cap.isOpened():
-        old_cap.release()
-
-    return f"Switched to camera {idx}"
 
 
 def _preprocess_roi(roi: np.ndarray):
@@ -1001,9 +1175,16 @@ def verify_start_sync(threshold_input):
     )
 
 
-def get_verify_status_sync() -> str:
-    with app.state.register_lock:
-        return app.state.verify_last_result
+def register_start_action(register_id_text: str):
+    _ = register_start_sync(register_id_text)
+
+
+def register_update_action(register_id_text: str):
+    _ = register_update_id_sync(register_id_text)
+
+
+def verify_start_action(threshold_input):
+    _ = verify_start_sync(threshold_input)
 
 
 def _get_verify_status_text(app_instance: FastAPI) -> str:
@@ -1026,25 +1207,79 @@ def _claim_verify_threshold_for_frame(app_instance: FastAPI, frame_id: int):
         return threshold
 
 
-def _render_verify_status_panel(text: str, width: int = 980, height: int = 86) -> np.ndarray:
-    panel = np.full((height, width, 3), 245, dtype=np.uint8)
-    cv2.rectangle(panel, (0, 0), (width - 1, height - 1), (210, 210, 210), 1)
+def _verify_panel_theme(text: str):
+    msg = (text or "").strip()
+    if msg.lower().startswith("verified:"):
+        return {
+            "label": "VERIFIED",
+            "bg": (224, 245, 229),
+            "border": (76, 166, 95),
+            "text": (32, 88, 40),
+            "badge_text": (255, 255, 255),
+        }
+    return {
+        "label": "NOT VERIFIED",
+        "bg": (226, 232, 255),
+        "border": (70, 85, 202),
+        "text": (20, 30, 120),
+        "badge_text": (255, 255, 255),
+    }
 
+
+def _render_verify_status_panel(
+    text: str,
+    width: int = VERIFY_PANEL_WIDTH,
+    height: int = VERIFY_PANEL_HEIGHT,
+) -> np.ndarray:
     msg = (text or "").strip() or "Verify OFF."
-    lines = textwrap.wrap(msg, width=120) or [msg]
-    y = 28
-    for line in lines[:2]:
+    theme = _verify_panel_theme(msg)
+
+    panel = np.full((height, width, 3), theme["bg"], dtype=np.uint8)
+    cv2.rectangle(panel, (0, 0), (width - 1, height - 1), theme["border"], 2)
+    cv2.rectangle(panel, (0, 0), (10, height - 1), theme["border"], -1)
+
+    badge_font = cv2.FONT_HERSHEY_SIMPLEX
+    badge_scale = 0.5
+    badge_thickness = 1
+    label = theme["label"]
+    (label_w, label_h), _ = cv2.getTextSize(label, badge_font, badge_scale, badge_thickness)
+    badge_x = 18
+    badge_y = 8
+    badge_w = label_w + 20
+    badge_h = label_h + 10
+    cv2.rectangle(
+        panel,
+        (badge_x, badge_y),
+        (badge_x + badge_w, badge_y + badge_h),
+        theme["border"],
+        -1,
+    )
+    cv2.putText(
+        panel,
+        label,
+        (badge_x + 10, badge_y + badge_h - 7),
+        badge_font,
+        badge_scale,
+        theme["badge_text"],
+        badge_thickness,
+        cv2.LINE_AA,
+    )
+
+    wrap_width = max(36, int(width / 9))
+    lines = textwrap.wrap(msg, width=wrap_width) or [msg]
+    y = badge_y + badge_h + 18
+    for line in lines[:1]:
         cv2.putText(
             panel,
             line,
-            (12, y),
+            (18, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.57,
-            (40, 40, 40),
+            0.48,
+            theme["text"],
             1,
             cv2.LINE_AA,
         )
-        y += 24
+        y += 20
     return panel
 
 
@@ -1143,14 +1378,29 @@ def _get_cached_plot_png(app_instance: FastAPI, method: str, force: bool = False
         return png
 
 
-def _manual_plot_html(method: str, force: bool = True) -> str:
+def _manual_plot_placeholder_html(method: str) -> str:
     method = _normalize_plot_method(method)
-    ts = time.time_ns()
     title = method.upper() if method != "tsne" else "t-SNE"
-    force_q = "1" if force else "0"
     return (
-        '<div style="width:100%; min-width:360px; max-width:420px;">'
-        f'<img src="/plot/embeddings?method={method}&force={force_q}&t={ts}" '
+        f'<div style="width:{PLOT_DISPLAY_WIDTH}px; max-width:100%; margin:0 auto;">'
+        '<div style="padding:10px; text-align:center; color:#666; border:1px solid #ccc; background:#fff;">'
+        f"Initializing {title}..."
+        "</div></div>"
+    )
+
+
+def _manual_plot_html(method: str, force: bool = True, png: bytes | None = None) -> str:
+    method = _normalize_plot_method(method)
+    title = method.upper() if method != "tsne" else "t-SNE"
+    if png is None:
+        ts = time.time_ns()
+        force_q = "1" if force else "0"
+        src = f"/plot/embeddings?method={method}&force={force_q}&t={ts}"
+    else:
+        src = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+    return (
+        f'<div style="width:{PLOT_DISPLAY_WIDTH}px; max-width:100%; margin:0 auto;">'
+        f'<img src="{src}" '
         f'alt="{title} plot" '
         'style="display:block; width:100%; border:1px solid #ccc; background:#fff;" '
         f'onerror="this.outerHTML=\'<div style=&quot;padding:10px;color:#900;border:1px solid #caa;background:#fee;&quot;>{title} render failed</div>\'">'
@@ -1159,9 +1409,22 @@ def _manual_plot_html(method: str, force: bool = True) -> str:
 
 
 def refresh_manifold_plots_sync():
-    _get_cached_plot_png(app, "umap", force=True)
-    _get_cached_plot_png(app, "tsne", force=True)
-    return _manual_plot_html("umap", force=False), _manual_plot_html("tsne", force=False)
+    umap_png = _get_cached_plot_png(app, "umap", force=True)
+    tsne_png = _get_cached_plot_png(app, "tsne", force=True)
+    with app.state.plot_lock:
+        app.state.initial_manifold_ready = True
+    return _manual_plot_html("umap", force=False, png=umap_png), _manual_plot_html(
+        "tsne", force=False, png=tsne_png
+    )
+
+
+def initialize_manifold_plots_sync():
+    umap_html, tsne_html = refresh_manifold_plots_sync()
+    return (
+        umap_html,
+        tsne_html,
+        gr.update(interactive=True, value="Refresh UMAP + t-SNE"),
+    )
 
 
 def disable_refresh_manifold_btn_sync():
@@ -1170,6 +1433,12 @@ def disable_refresh_manifold_btn_sync():
 
 def enable_refresh_manifold_btn_sync():
     return gr.update(interactive=True, value="Refresh UMAP + t-SNE")
+
+
+def start_initial_manifold_refresh_sync():
+    with app.state.plot_lock:
+        app.state.initial_manifold_ready = False
+    return gr.update(interactive=False, value="Initializing UMAP + t-SNE...")
 
 
 async def stream_plot_frames(method: str = "pca"):
@@ -1217,7 +1486,7 @@ async def stream_frames(mode: str = "raw"):
         if frame is None:
             if mode == "raw":
                 output = _placeholder(
-                    "Waiting for camera...",
+                    "Waiting for browser camera...",
                     CAMERA_DISPLAY_WIDTH,
                     CAMERA_DISPLAY_HEIGHT,
                 )
@@ -1323,17 +1592,232 @@ async def stream_frames(mode: str = "raw"):
         await asyncio.sleep(0.001)
 
 
+def _camera_webrtc_widget_html() -> str:
+    upload_interval_ms = max(40, int(1000 / max(1, BROWSER_UPLOAD_FPS)))
+    capture_fps = max(5, min(30, BROWSER_UPLOAD_FPS * 2))
+    return textwrap.dedent(
+        f"""
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      :root {{
+        color-scheme: light;
+      }}
+      body {{
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f8fafc;
+      }}
+      .wrap {{
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 10px;
+      }}
+      .toolbar {{
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }}
+      button {{
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #ffffff;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 13px;
+        cursor: pointer;
+      }}
+      button:disabled {{
+        opacity: 0.5;
+        cursor: not-allowed;
+      }}
+      #status {{
+        font-size: 13px;
+        color: #334155;
+      }}
+      #status.error {{
+        color: #991b1b;
+      }}
+      video {{
+        width: 100%;
+        max-width: {CAMERA_UI_WIDTH}px;
+        display: block;
+        background: #111827;
+        border: 1px solid #d1d5db;
+      }}
+      canvas {{
+        display: none;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="toolbar">
+        <button id="start-btn" type="button">Start Browser Camera</button>
+        <button id="stop-btn" type="button" disabled>Stop</button>
+        <span id="status">Idle</span>
+      </div>
+      <video id="preview" autoplay playsinline muted></video>
+      <canvas id="capture"></canvas>
+    </div>
+    <script>
+      (() => {{
+        const startBtn = document.getElementById("start-btn");
+        const stopBtn = document.getElementById("stop-btn");
+        const statusEl = document.getElementById("status");
+        const videoEl = document.getElementById("preview");
+        const canvasEl = document.getElementById("capture");
+        const ctx = canvasEl.getContext("2d", {{ alpha: false }});
+
+        const uploadIntervalMs = {upload_interval_ms};
+        let stream = null;
+        let timerId = null;
+        let uploading = false;
+        let sentFrames = 0;
+
+        function setStatus(text, isError = false) {{
+          statusEl.textContent = text;
+          statusEl.className = isError ? "error" : "";
+        }}
+
+        function setRunning(isRunning) {{
+          startBtn.disabled = isRunning;
+          stopBtn.disabled = !isRunning;
+        }}
+
+        async function uploadFrame() {{
+          if (!stream || uploading) {{
+            return;
+          }}
+          if (videoEl.readyState < 2) {{
+            return;
+          }}
+
+          const width = videoEl.videoWidth || {CAPTURE_WIDTH};
+          const height = videoEl.videoHeight || {CAPTURE_HEIGHT};
+          if (width <= 0 || height <= 0) {{
+            return;
+          }}
+
+          canvasEl.width = width;
+          canvasEl.height = height;
+          ctx.drawImage(videoEl, 0, 0, width, height);
+
+          const blob = await new Promise((resolve) => canvasEl.toBlob(resolve, "image/jpeg", 0.9));
+          if (!blob) {{
+            return;
+          }}
+
+          uploading = true;
+          try {{
+            const resp = await fetch("/camera/frame", {{
+              method: "POST",
+              headers: {{ "Content-Type": "image/jpeg" }},
+              body: blob,
+              cache: "no-store",
+            }});
+            if (!resp.ok) {{
+              setStatus(`Frame upload failed (${{resp.status}})`, true);
+              return;
+            }}
+            sentFrames += 1;
+            if (sentFrames % 10 === 0) {{
+              setStatus(`Streaming (${{sentFrames}} frames sent)`);
+            }}
+          }} catch (err) {{
+            setStatus(`Frame upload error: ${{err}}`, true);
+          }} finally {{
+            uploading = false;
+          }}
+        }}
+
+        async function startCamera() {{
+          if (stream) {{
+            return;
+          }}
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+            setStatus("Browser does not support camera capture.", true);
+            return;
+          }}
+          if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {{
+            setStatus("Camera requires HTTPS (or localhost).", true);
+            return;
+          }}
+
+          try {{
+            stream = await navigator.mediaDevices.getUserMedia({{
+              audio: false,
+              video: {{
+                width: {{ ideal: {CAPTURE_WIDTH} }},
+                height: {{ ideal: {CAPTURE_HEIGHT} }},
+                frameRate: {{ ideal: {capture_fps}, max: 30 }},
+              }},
+            }});
+            videoEl.srcObject = stream;
+            await videoEl.play();
+            sentFrames = 0;
+            timerId = window.setInterval(uploadFrame, uploadIntervalMs);
+            setRunning(true);
+            setStatus("Streaming...");
+          }} catch (err) {{
+            setStatus(`Camera start failed: ${{err}}`, true);
+            await stopCamera(false);
+          }}
+        }}
+
+        async function stopCamera(notifyServer = true) {{
+          if (timerId !== null) {{
+            window.clearInterval(timerId);
+            timerId = null;
+          }}
+          if (stream) {{
+            stream.getTracks().forEach((track) => track.stop());
+            stream = null;
+          }}
+          videoEl.srcObject = null;
+          setRunning(false);
+          setStatus("Stopped");
+
+          if (notifyServer) {{
+            try {{
+              await fetch("/camera/stop", {{ method: "POST", cache: "no-store" }});
+            }} catch (_err) {{
+              // Ignore teardown network errors.
+            }}
+          }}
+        }}
+
+        startBtn.addEventListener("click", () => {{
+          startCamera();
+        }});
+        stopBtn.addEventListener("click", () => {{
+          stopCamera(true);
+        }});
+        window.addEventListener("beforeunload", () => {{
+          stopCamera(true);
+        }});
+      }})();
+    </script>
+  </body>
+</html>
+"""
+    ).strip()
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
-    app_instance.state.cap_map = {}
-    app_instance.state.cam_idx = 0
     app_instance.state.frame_lock = threading.Lock()
     app_instance.state.register_lock = threading.Lock()
     app_instance.state.plot_lock = threading.Lock()
     app_instance.state.plot_render_locks = {m: threading.Lock() for m in PLOT_METHODS}
     app_instance.state.latest_frame = None
     app_instance.state.latest_frame_id = 0
-    app_instance.state.capture_stop = threading.Event()
+    app_instance.state.latest_frame_ts = 0.0
     app_instance.state.shutdown_event = asyncio.Event()
     app_instance.state.register_enabled = False
     app_instance.state.register_target_id = None
@@ -1352,30 +1836,13 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.plot_pca_basis_ready = False
     app_instance.state.plot_version = 0
     app_instance.state.plot_png_cache = {}
+    app_instance.state.initial_manifold_ready = False
 
     _init_backends(app_instance)
-
-    cap0 = _open_camera(0)
-    if cap0 is not None:
-        app_instance.state.cap_map[0] = cap0
-
-    app_instance.state.capture_thread = threading.Thread(
-        target=_capture_loop,
-        args=(app_instance,),
-        daemon=True,
-    )
-    app_instance.state.capture_thread.start()
 
     yield
 
     app_instance.state.shutdown_event.set()
-    app_instance.state.capture_stop.set()
-    if app_instance.state.capture_thread.is_alive():
-        app_instance.state.capture_thread.join(timeout=1.0)
-
-    for cap in app_instance.state.cap_map.values():
-        if cap is not None and cap.isOpened():
-            cap.release()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -1407,6 +1874,49 @@ async def verify_status_stream():
         stream_verify_status_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.get("/camera/webrtc-widget", include_in_schema=False)
+async def camera_webrtc_widget():
+    return HTMLResponse(_camera_webrtc_widget_html())
+
+
+@app.post("/camera/frame", include_in_schema=False)
+async def camera_frame_ingest(request: Request):
+    payload = await request.body()
+    if not payload:
+        return PlainTextResponse("empty frame payload", status_code=400)
+
+    encoded = np.frombuffer(payload, dtype=np.uint8)
+    if encoded.size == 0:
+        return PlainTextResponse("invalid frame payload", status_code=400)
+
+    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if frame is None or frame.size == 0:
+        return PlainTextResponse("failed to decode frame", status_code=400)
+
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        return PlainTextResponse("invalid frame shape", status_code=400)
+
+    if w != CAPTURE_WIDTH or h != CAPTURE_HEIGHT:
+        frame = cv2.resize(
+            frame,
+            (CAPTURE_WIDTH, CAPTURE_HEIGHT),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    _store_latest_frame(app, frame)
+    return Response(status_code=204)
+
+
+@app.post("/camera/stop", include_in_schema=False)
+async def camera_stop():
+    _clear_latest_frame(app)
+    with app.state.register_lock:
+        app.state.register_last_frame_id = -1
+        app.state.verify_last_frame_id = -1
+    return Response(status_code=204)
 
 
 @app.get("/plot/embeddings", include_in_schema=False)
@@ -1444,6 +1954,20 @@ async def plot_version():
     with app.state.plot_lock:
         version = app.state.plot_version
     return PlainTextResponse(str(version))
+
+
+@app.get("/plot/init-ready", include_in_schema=False)
+async def plot_init_ready():
+    with app.state.plot_lock:
+        ready = bool(getattr(app.state, "initial_manifold_ready", False))
+    return PlainTextResponse("1" if ready else "0")
+
+
+@app.post("/plot/init-start", include_in_schema=False)
+async def plot_init_start():
+    with app.state.plot_lock:
+        app.state.initial_manifold_ready = False
+    return Response(status_code=204)
 
 
 @app.get("/identify/latest")
@@ -1518,117 +2042,104 @@ async def preprocessed_roi_feed():
     )
 
 
-with gr.Blocks(title="Palm ROI Extraction") as ui:
-    gr.Markdown("# Palm ROI Extraction (Smooth Stream)")
+with gr.Blocks(title="Palm ROI Extraction", css=APP_UI_CSS, head=APP_UI_HEAD) as ui:
+    gr.Markdown("# Palm ROI Extraction (Smooth Stream)", elem_classes="app-title")
 
-    with gr.Row():
-        cam_dd = gr.Dropdown(
-            choices=[str(i) for i in range(4)],
-            value="0",
-            label="Camera Index",
-        )
-        cam_status = gr.Textbox(label="Camera Status", interactive=False)
-
-    cam_dd.change(fn=switch_camera_sync, inputs=[cam_dd], outputs=[cam_status], queue=False)
-
-    with gr.Row():
-        register_id_tb = gr.Textbox(
-            label="Register ID",
-            placeholder="Enter ID (integer)",
-        )
-        register_btn = gr.Button("Register", variant="primary")
-        verify_btn = gr.Button("Verify", variant="secondary")
-        verify_threshold_tb = gr.Number(
-            label="Verify Threshold (Euclid)",
-            value=35.0,
-            precision=4,
-        )
-    with gr.Row():
-        register_status = gr.Textbox(label="Register Status", interactive=False)
-        verify_status = gr.Textbox(label="Verify Status", interactive=False)
-    gr.HTML(
-        """
-<div style="font-weight:600; margin-bottom:6px;">Verify Status (Live)</div>
-<img src="/verify/status-stream" alt="Verify status stream"
-     style="display:block; width:100%; max-width:980px; border:1px solid #ddd; background:#f5f5f5;">
-"""
-    )
+    with gr.Column(elem_classes="control-card"):
+        with gr.Row(elem_classes="controls-row"):
+            register_id_tb = gr.Textbox(
+                label="Register ID",
+                placeholder="Enter ID (integer)",
+                scale=4,
+            )
+            verify_threshold_tb = gr.Number(
+                label="Verify Threshold (Euclid)",
+                value=35.0,
+                precision=4,
+                scale=2,
+            )
+            register_btn = gr.Button("Register", variant="primary", scale=1)
+            verify_btn = gr.Button("Verify", variant="secondary", scale=1)
 
     register_btn.click(
-        fn=register_start_sync,
+        fn=register_start_action,
         inputs=[register_id_tb],
-        outputs=[register_status],
         queue=False,
     )
     register_id_tb.change(
-        fn=register_update_id_sync,
+        fn=register_update_action,
         inputs=[register_id_tb],
-        outputs=[register_status],
         queue=False,
     )
     verify_btn.click(
-        fn=verify_start_sync,
+        fn=verify_start_action,
         inputs=[verify_threshold_tb],
-        outputs=[verify_status, register_status],
         queue=False,
     )
 
-    gr.HTML(
-        f"""
-<div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:nowrap; overflow-x:auto;">
-  <div style="flex:0 0 auto;">
-    <div style="font-weight:600; margin-bottom:8px;">Live Camera</div>
-    <img src="/video/raw" alt="Raw stream"
-         style="display:block; width:{CAMERA_DISPLAY_WIDTH}px; height:auto; border:1px solid #ccc; background:#111;">
-  </div>
-  <div style="flex:0 0 auto; display:flex; flex-direction:column; gap:12px;">
-    <div>
-      <div style="font-weight:600; margin-bottom:8px;">Palm ROI</div>
-      <img src="/video/roi" alt="ROI stream"
-           style="display:block; width:{ROI_DISPLAY_SIZE}px; height:{ROI_DISPLAY_SIZE}px; border:1px solid #ccc; background:#111;">
+    with gr.Row(equal_height=False, elem_classes="main-layout"):
+        with gr.Column(scale=7, min_width=520, elem_classes="camera-panel"):
+            gr.HTML(
+                f"""
+<div class="camera-wrap">
+  <div class="camera-inner" style="display:flex; flex-direction:row; flex-wrap:nowrap; align-items:flex-start; gap:12px;">
+    <div class="camera-frame-wrap">
+      <div class="section-title">Live Camera (WebRTC)</div>
+      <div class="camera-frame-box">
+        <iframe src="/camera/webrtc-widget"
+                title="Browser camera capture"
+                style="display:block; width:{CAMERA_UI_WIDTH}px; height:{CAMERA_UI_HEIGHT}px; border:1px solid #ccc; background:#fff;"
+                allow="camera; microphone">
+        </iframe>
+        <img src="/verify/status-stream" alt="Verify status stream" class="verify-overlay">
+      </div>
     </div>
-    <div>
-      <div style="font-weight:600; margin-bottom:8px;">Preprocessed ROI</div>
-      <img src="/video/roi-preprocessed" alt="Preprocessed ROI stream"
-           style="display:block; width:{ROI_DISPLAY_SIZE}px; height:{ROI_DISPLAY_SIZE}px; border:1px solid #ccc; background:#111;">
+    <div class="roi-stack" style="display:flex; flex-direction:column; gap:12px; flex:0 0 auto;">
+      <div>
+        <div class="section-title">Palm ROI</div>
+        <img src="/video/roi" alt="ROI stream"
+             style="display:block; width:{ROI_UI_SIZE}px; height:{ROI_UI_SIZE}px; border:1px solid #ccc; background:#111;">
+      </div>
+      <div>
+        <div class="section-title">Preprocessed ROI</div>
+        <img src="/video/roi-preprocessed" alt="Preprocessed ROI stream"
+             style="display:block; width:{ROI_UI_SIZE}px; height:{ROI_UI_SIZE}px; border:1px solid #ccc; background:#111;">
+      </div>
     </div>
   </div>
 </div>
 """
-    )
-
-    gr.Markdown("### Palm Vector Database (PCA / UMAP / t-SNE)")
-    with gr.Row(equal_height=False):
-        with gr.Column():
-            gr.Markdown("#### PCA (Live)")
-            gr.HTML(
-                '<img src="/plot/stream/pca" alt="PCA plot" '
-                'style="display:block; width:100%; min-width:360px; max-width:420px; '
-                'border:1px solid #ccc; background:#fff;">'
             )
-        with gr.Column():
-            gr.Markdown("#### UMAP (Manual Refresh)")
-            umap_plot = gr.HTML(value=_manual_plot_html("umap"))
-        with gr.Column():
-            gr.Markdown("#### t-SNE (Manual Refresh)")
-            tsne_plot = gr.HTML(value=_manual_plot_html("tsne"))
-    refresh_manifold_btn = gr.Button(
-        "Initializing UMAP + t-SNE...",
-        interactive=False,
-    )
+
+        with gr.Column(scale=5, min_width=500, elem_classes="plot-panel"):
+            gr.Markdown("### Palm Vector Database (PCA / UMAP / t-SNE)")
+            with gr.Row(equal_height=False, elem_classes="plot-top-row"):
+                with gr.Column(min_width=PLOT_DISPLAY_WIDTH, elem_classes="plot-cell"):
+                    gr.HTML('<div class="plot-title">PCA (Live)</div>')
+                    gr.HTML(
+                        f'<img src="/plot/stream/pca" alt="PCA plot" '
+                        f'style="display:block; width:{PLOT_DISPLAY_WIDTH}px; max-width:100%; margin:0 auto; border:1px solid #ccc; background:#fff;">'
+                    )
+                with gr.Column(min_width=PLOT_DISPLAY_WIDTH, elem_classes="plot-cell"):
+                    gr.HTML('<div class="plot-title">UMAP (Manual Refresh)</div>')
+                    umap_plot = gr.HTML(value=_manual_plot_placeholder_html("umap"))
+            with gr.Row(equal_height=False, elem_classes="plot-bottom-row"):
+                with gr.Column(min_width=PLOT_DISPLAY_WIDTH, elem_classes="plot-cell"):
+                    gr.HTML('<div class="plot-title">t-SNE (Manual Refresh)</div>')
+                    tsne_plot = gr.HTML(value=_manual_plot_placeholder_html("tsne"))
+            refresh_manifold_btn = gr.Button(
+                "Initializing UMAP + t-SNE...",
+                interactive=False,
+            )
 
     ui.load(
-        fn=disable_refresh_manifold_btn_sync,
+        fn=start_initial_manifold_refresh_sync,
         outputs=[refresh_manifold_btn],
         queue=False,
     ).then(
-        fn=refresh_manifold_plots_sync,
-        outputs=[umap_plot, tsne_plot],
+        fn=initialize_manifold_plots_sync,
+        outputs=[umap_plot, tsne_plot, refresh_manifold_btn],
         queue=True,
-    ).then(
-        fn=enable_refresh_manifold_btn_sync,
-        outputs=[refresh_manifold_btn],
-        queue=False,
     )
     refresh_manifold_btn.click(
         fn=disable_refresh_manifold_btn_sync,
@@ -1649,4 +2160,8 @@ gr.mount_gradio_app(app, ui, path="/ui")
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=7000)
+    uvicorn.run(
+        app,
+        host=os.getenv("APP_HOST", "0.0.0.0"),
+        port=int(os.getenv("APP_PORT", "7000")),
+    )
