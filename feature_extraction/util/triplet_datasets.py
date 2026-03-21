@@ -1,9 +1,10 @@
 import random
+from typing import Dict, List
+
 from PIL import Image
 from torch.utils.data import Dataset
 import torch
 import numpy as np
-import sys
 # def apply_cutmix(image1, image2, beta=1.0):
 
 #     np_img1 = np.array(image1)
@@ -66,27 +67,32 @@ class TripletDataset(Dataset):
     ):
         self.image_paths = image_paths
         self.labels = labels
-        self.n_negatives = (
-            n_negatives 
-        )
+        self.n_negatives = max(1, int(n_negatives))
         self.transform = transform
         self.augmentation = augmentation
 
+        if self.transform is None:
+            raise ValueError("TripletDataset requires a base transform.")
+
         # Create a dictionary mapping labels to their indices
-        self.label_to_indices = {}
+        self.label_to_indices: Dict[int, List[int]] = {}
         for idx, label in enumerate(self.labels):
             if label not in self.label_to_indices:
                 self.label_to_indices[label] = []
             self.label_to_indices[label].append(idx)
         print(f"Number of labels: {len(self.label_to_indices)}")
+
+        if len(self.label_to_indices) < 2:
+            raise ValueError("TripletDataset requires at least 2 classes for negative sampling.")
+
         # Calculate the maximum possible different labels for negatives
         self.max_possible_neg_classes = (
             len(self.label_to_indices) - 1
         )  # -1 for anchor's class
 
         # Adjust num_classes_for_negative if it exceeds maximum possible
-        self.num_classes_for_negative = min(
-            num_classes_for_negative, self.max_possible_neg_classes
+        self.num_classes_for_negative = max(
+            1, min(num_classes_for_negative, self.max_possible_neg_classes)
         )
 
     def __len__(self):
@@ -97,6 +103,8 @@ class TripletDataset(Dataset):
         anchor_label = self.labels[idx]
 
         positive_indices = [i for i in self.label_to_indices[anchor_label] if i != idx]
+        if not positive_indices:
+            positive_indices = self.label_to_indices[anchor_label]
         positive_idx = random.choice(positive_indices)
         positive_image = Image.open(self.image_paths[positive_idx]).convert("RGB")
 
@@ -104,47 +112,40 @@ class TripletDataset(Dataset):
             label for label in self.label_to_indices.keys() if label != anchor_label
         ]
 
-        selected_labels = random.sample(available_labels, self.num_classes_for_negative)
+        neg_class_count = min(len(available_labels), self.num_classes_for_negative)
+        selected_labels = random.sample(available_labels, neg_class_count)
 
         samples_per_label = [
-            self.n_negatives // self.num_classes_for_negative
-        ] * self.num_classes_for_negative
-        remaining = self.n_negatives % self.num_classes_for_negative
+            self.n_negatives // neg_class_count
+        ] * neg_class_count
+        remaining = self.n_negatives % neg_class_count
         for i in range(remaining):
             samples_per_label[i] += 1
 
         negative_images = []
         for label, num_samples in zip(selected_labels, samples_per_label):
             label_indices = self.label_to_indices[label]
-
-            num_samples = min(num_samples, len(label_indices))
-            selected_indices = random.sample(label_indices, num_samples)
+            if num_samples <= 0:
+                continue
+            if num_samples <= len(label_indices):
+                selected_indices = random.sample(label_indices, num_samples)
+            else:
+                selected_indices = random.choices(label_indices, k=num_samples)
 
             for neg_idx in selected_indices:
-                # print(self.image_paths[neg_idx])
                 negative_image = Image.open(self.image_paths[neg_idx]).convert("RGB")
-
-                if self.augmentation and random.random() < 0.7:
-                    negative_image = self.augmentation(negative_image)
-                else:
-                    negative_image = self.transform(negative_image)
+                negative_image = self._transform_with_optional_aug(negative_image, aug_prob=0.7)
                 negative_images.append(negative_image)
 
-        if self.augmentation:
-            if random.random() < 0.5:
-                anchor_image = self.augmentation(anchor_image)
-            else:
-                anchor_image = self.transform(anchor_image)
-
-            if random.random() < 0.7:
-                positive_image = self.augmentation(positive_image)
-            else:
-                positive_image = self.transform(positive_image)
-        else:
-            anchor_image = self.transform(anchor_image)
-            positive_image = self.transform(positive_image)
+        anchor_image = self._transform_with_optional_aug(anchor_image, aug_prob=0.5)
+        positive_image = self._transform_with_optional_aug(positive_image, aug_prob=0.5)
 
         return anchor_image, positive_image, negative_images
+
+    def _transform_with_optional_aug(self, image: Image.Image, aug_prob: float):
+        if self.augmentation is not None and random.random() < aug_prob:
+            return self.augmentation(image)
+        return self.transform(image)
 
 
 def triplet_collate_fn(batch):
@@ -160,6 +161,8 @@ def triplet_collate_fn(batch):
     # Stack images
     anchors = torch.stack(anchors)  # Batch of anchor images
     positives = torch.stack(positives)  # Batch of positive images
+    if not negatives:
+        raise ValueError("No negatives were sampled for this batch; check triplet sampler settings.")
     negatives = torch.stack(negatives)  # Batch of all negative images
     all_images = torch.cat([anchors, positives, negatives], dim=0)
     return all_images, len(anchors), len(negatives) // len(anchors)

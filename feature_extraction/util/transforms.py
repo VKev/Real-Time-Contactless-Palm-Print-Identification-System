@@ -3,7 +3,6 @@ from albumentations.pytorch import ToTensorV2
 import numpy as np
 from PIL import Image
 import os
-import torch.nn as nn
 
 
 def to_numpy(image):
@@ -11,20 +10,56 @@ def to_numpy(image):
         return np.array(image)
     return image
 
-def transform(image):
-    image = to_numpy(image)
-    transform_pipeline = A.Compose(
-        [
-            A.Resize(224, 224),
-            A.Normalize(mean=[0.5], std=[0.5]),
-            ToTensorV2(),
-        ]
-    )
-    return transform_pipeline(image=image)["image"]
+_MEAN = [0.5, 0.5, 0.5]
+_STD = [0.5, 0.5, 0.5]
 
-def augmentation(image):
-    image = to_numpy(image)
-    augmentation_pipeline = A.Compose([
+_BASE_PIPELINE = A.Compose(
+    [
+        A.Resize(224, 224),
+        A.Normalize(mean=_MEAN, std=_STD),
+        ToTensorV2(),
+    ]
+)
+
+_AUG_IMAGE_PIPELINE = A.Compose(
+    [
+        A.Resize(224, 224),
+        A.Affine(
+            scale=(0.95, 1.05),
+            translate_percent=(-0.03, 0.03),
+            rotate=(-12, 12),
+            shear=(-5, 5),
+            p=0.6,
+        ),
+        A.RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0), ratio=(0.95, 1.05), p=0.25),
+        A.OneOf(
+            [
+                A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+                A.MotionBlur(blur_limit=(3, 5), p=1.0),
+            ],
+            p=0.15,
+        ),
+        A.OneOf(
+            [
+                A.ImageCompression(quality_range=(85, 100), p=1.0),
+                A.ISONoise(p=1.0),
+            ],
+            p=0.2,
+        ),
+        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.3),
+        A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.15),
+        A.CoarseDropout(
+            num_holes_range=(1, 4),
+            hole_height_range=(4, 14),
+            hole_width_range=(4, 14),
+            fill=0,
+            p=0.1,
+        ),
+    ]
+)
+
+_AUG_PIPELINE = A.Compose(
+    [
         A.Resize(224, 224),
         A.SomeOf([
             A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2, p=0.5),
@@ -68,10 +103,18 @@ def augmentation(image):
         A.PlasmaShadow(plasma_size = 256,shadow_intensity_range=(0.1, 0.2),roughness=3,p=0.35),
         A.PlasmaBrightnessContrast(brightness_range=(-0.1, 0.1),contrast_range=(-0.1, 0.1),plasma_size=256,roughness=3,p=0.2),
         A.GlassBlur(sigma=0.07, max_delta=1, iterations=1, mode="exact", p=0.2),
-        A.Normalize(mean=[0.5], std=[0.5]),
+        A.Normalize(mean=_MEAN, std=_STD),
         ToTensorV2(),
-    ])
-    return augmentation_pipeline(image=image)['image']
+    ]
+)
+
+def transform(image):
+    image = to_numpy(image)
+    return _BASE_PIPELINE(image=image)["image"]
+
+def augmentation(image):
+    image = to_numpy(image)
+    return _AUG_PIPELINE(image=image)["image"]
 
 
 def augment_and_save_images(input_path, output_path):
@@ -82,7 +125,7 @@ def augment_and_save_images(input_path, output_path):
                 input_file_path = os.path.join(root, file)
 
                 image = Image.open(input_file_path).convert("RGB")
-                augmented_image = augmentation(image)
+                augmented_image = _AUG_IMAGE_PIPELINE(image=np.array(image))["image"]
                 augmented_image = Image.fromarray(augmented_image)
                 output_file_path = os.path.join(output_path, file)
                 augmented_image.save(output_file_path)

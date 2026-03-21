@@ -1,0 +1,12 @@
+fastapi
+gradio
+matplotlib
+mediapipe>=0.10.32
+numpy
+opencv-contrib-python-headless
+qdrant-client
+scikit-learn
+torchdr
+tritonclient[grpc]
+umap-learn
+uvicorn[standard]

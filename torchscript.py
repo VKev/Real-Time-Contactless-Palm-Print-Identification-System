@@ -25,28 +25,28 @@ if __name__ == "__main__":
     version   = "1"
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    MODEL_PATH_DEPTH = "depth_estimation/checkpoints/depth_anything_v2_vits.pth"
-    depth_cfg = {
-        'encoder':     'vits',
-        'features':    64,
-        'out_channels':[48, 96, 192, 384],
-        'use_bn':      False,
-        'use_clstoken':False,
-    }
-    model_depth = DepthAnythingV2(**depth_cfg).to(device)
-    state_dict   = torch.load(MODEL_PATH_DEPTH, map_location="cpu")
-    model_depth.load_state_dict(state_dict)
-    depth_input  = torch.randn(1, 3, 252, 252, device=device)
+    # MODEL_PATH_DEPTH = "depth_estimation/checkpoints/depth_anything_v2_vits.pth"
+    # depth_cfg = {
+    #     'encoder':     'vits',
+    #     'features':    64,
+    #     'out_channels':[48, 96, 192, 384],
+    #     'use_bn':      False,
+    #     'use_clstoken':False,
+    # }
+    # model_depth = DepthAnythingV2(**depth_cfg).to(device)
+    # state_dict   = torch.load(MODEL_PATH_DEPTH, map_location="cpu")
+    # model_depth.load_state_dict(state_dict)
+    # depth_input  = torch.randn(1, 3, 252, 252, device=device)
 
-    export_model_to_triton(
-        model      = model_depth,
-        dummy_input= depth_input,
-        repo_root  = repo_root,
-        model_name = "depth_anything_v2",
-        version    = version
-    )
+    # export_model_to_triton(
+    #     model      = model_depth,
+    #     dummy_input= depth_input,
+    #     repo_root  = repo_root,
+    #     model_name = "depth_anything_v2",
+    #     version    = version
+    # )
 
-    MODEL_PATH_FEAT = "feature_extraction/checkpoints/attempt_8.pth"
+    MODEL_PATH_FEAT = "feature_extraction/checkpoints/checkpoint_epoch_165.pth"
     model_feat = MyModel().to(device)
     ckpt       = torch.load(MODEL_PATH_FEAT, map_location="cpu")
     if "model_state_dict" in ckpt:

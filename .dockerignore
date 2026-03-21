@@ -1,0 +1,20 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Large training/data artifacts not needed for runtime image
+feature_extraction/
+depth_estimation/
+images/
+qdrant_data/
+scripts/
+frontend/node_modules/
+frontend/dist/
+
+# Local/dev files
+*.log
+*.tmp
+*.bak

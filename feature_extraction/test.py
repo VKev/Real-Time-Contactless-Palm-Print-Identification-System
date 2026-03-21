@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-c", "--checkpoint", type=Path,
                         default=Path("checkpoints/attempt_6.pth"), help="Model checkpoint")
     parser.add_argument("-d", "--data-dir", type=Path,
-                        default=Path("../../Dataset/Palm-Print/RealisticSet/Roi/roi_no_bg"), help="Image directory")
+                        default=Path("dataset/RealisticSet/Roi/roi_no_bg"), help="Image directory")
     parser.add_argument("-b", "--batch-size", type=int, default=8)
     parser.add_argument("-j", "--num-workers", type=int, default=4)
     parser.add_argument("--device", choices=["cpu", "cuda"],
@@ -72,7 +72,8 @@ def extract_embeddings(model: torch.nn.Module,
                        paths: list[Path],
                        batch: int,
                        workers: int,
-                       device: str) -> np.ndarray:
+                       device: str,
+                       normalize: bool = True) -> np.ndarray:
     loader = DataLoader(
         ImageDataset(paths, transform),
         batch_size=batch,
@@ -84,9 +85,10 @@ def extract_embeddings(model: torch.nn.Module,
     for imgs in tqdm(loader, desc="Extracting embeddings"):
         imgs = imgs.to(device)
         with torch.no_grad():
-            feats = model(imgs)                 # raw output
-            # feats = F.normalize(feats, p=2, dim=1)  # ① same as training
-            vecs.append(feats.cpu().numpy())    # ② store normalised
+            feats = model(imgs)
+            if normalize:
+                feats = F.normalize(feats, p=2, dim=1)
+            vecs.append(feats.cpu().numpy())
     return np.vstack(vecs)
 
 def compute_top1(emb: np.ndarray, paths: list[Path] | list[str]):
@@ -359,15 +361,15 @@ def compute_metrics(emb: np.ndarray, paths: list[Path] | list[str]):
     
     # Compute metrics
     accuracy = float((labels == predictions).mean())
-    f1 = f1_score(labels, predictions, average='weighted')
-    precision = precision_score(labels, predictions, average='weighted')
-    recall = recall_score(labels, predictions, average='weighted')
+    f1 = f1_score(labels, predictions, average='weighted', zero_division=0)
+    precision = precision_score(labels, predictions, average='weighted', zero_division=0)
+    recall = recall_score(labels, predictions, average='weighted', zero_division=0)
     
     # Compute confusion matrix
     cm = confusion_matrix(labels, predictions)
     
     # Get classification report
-    report = classification_report(labels, predictions, output_dict=True)
+    report = classification_report(labels, predictions, output_dict=True, zero_division=0)
     
     metrics = {
         'accuracy': accuracy,
