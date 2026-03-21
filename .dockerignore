@@ -11,6 +11,8 @@ depth_estimation/
 images/
 qdrant_data/
 scripts/
+frontend/node_modules/
+frontend/dist/
 
 # Local/dev files
 *.log

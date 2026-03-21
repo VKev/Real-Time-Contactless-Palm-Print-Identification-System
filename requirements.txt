@@ -18,10 +18,11 @@ scikit_learn
 seaborn
 timm
 torch
+torchdr
 torchvision
 tqdm
 tritonclient
 umap_learn
-uvicorn
+uvicorn[standard]
 wandb
 xformers

@@ -21,11 +21,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
     pip install -r requirements.runtime.txt
 
-COPY app.py ./app.py
-COPY simple_app.py ./simple_app.py
+COPY backend.py ./backend.py
 COPY roi_extraction ./roi_extraction
 COPY utils ./utils
+COPY docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint.sh
 
-EXPOSE 7000
+RUN chmod +x /usr/local/bin/backend-entrypoint.sh
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7000"]
+EXPOSE 7001
+
+CMD ["backend-entrypoint.sh"]

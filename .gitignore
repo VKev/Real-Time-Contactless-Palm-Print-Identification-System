@@ -3,3 +3,4 @@
 **/__pycache__/*
 *.task
 *.pth
+frontend/node_modules
